@@ -9,6 +9,9 @@
 #include <linux/fs.h>
 #include <linux/slab.h>
 
+struct bp_dev {
+	struct device dev;
+};
 // ll of devices
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -81,7 +84,10 @@ static const struct attribute_group *bp_dev_group[] = {
 
 static int bp_create(const char * name)
 {
+    struct bp_dev * dev;
 
+    dev->dev.groups = bp_dev_group;
+    
 }
 
 static int create_set(const char *val, const struct kernel_param *kp)
