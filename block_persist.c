@@ -18,10 +18,11 @@ struct bp_dev {
 	char blockdev[PATH_MAX];
 	struct mutex lock;
 	struct gendisk * disk;
+	int sysfs_inited;
 };
 // ll of devices
 
-#define dev_to_bp(dev) (container_of(dev, sturct bp_dev, dev))
+#define dev_to_bp(dev) ((struct bp_device *)dev_to_disk(dev)->private_data)
 
 static LIST_HEAD(bp_devices);
 
@@ -89,7 +90,7 @@ static ssize_t delete_store(struct device *dev, struct device_attribute *attr, c
 }
 static DEVICE_ATTR_WO(delete);
 
-static struct attribute *bp_dev_attrs[] = {
+static struct attribute *bp_attrs[] = {
 	&dev_attr_disabled.attr,
 	&dev_attr_delete.attr,
 	&dev_attr_blockdev.attr,
@@ -99,33 +100,50 @@ static struct attribute *bp_dev_attrs[] = {
 	NULL,
 };
 
-ATTRIBUTE_GROUPS(bp_dev);
+static struct attribute_group bp_attribute_group = {
+	.name = "persist",
+	.attrs= bp_attrs,
+};
 
-static int brd_alloc(const char * name)
+static void bp_sysfs_init(struct bp_device *bp)
+{
+	bp->sysfs_inited = !sysfs_create_group(&disk_to_dev(bp->disk)->kobj,
+						&bp_attribute_group);
+}
+
+static void bp_sysfs_exit(struct bp_device *bp)
+{
+	if (lo->sysfs_inited)
+		sysfs_remove_group(&disk_to_dev(bp->bp_disk)->kobj,
+				   &bp_attribute_group);
+}
+
+static int bp_alloc(const char * name)
 {
 	struct bp_device *bpd;
 	struct gendisk *disk;
 	char buf[DISK_NAME_LEN];
 	int err = -ENOMEM;
 
-
 	bpd = kzalloc(sizeof(*bpd), GFP_KERNEL);
 	if (!bpd)
 		return -ENOMEM;
 
-	list_add_tail(&bpd->bpd_list, &bp_devices);
+	list_add_tail(&bpd->bpd_list, &bp_devices); // todo: use a lock
 
 	mutex_init(&bpd->lock);
 
-	// todo: check available
+	// todo: check name available
 	snprintf(buf, DISK_NAME_LEN, name);
 	
 	disk = bpd->disk = blk_alloc_disk(NUMA_NO_NODE);
 	if (!disk)
 		goto out_free_dev;
 
+	set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+
 	disk->major			= bp_major;
-	disk->first_minor	= i * max_part; // todo
+	disk->first_minor	= i * max_part; // todo: get free minor; use a lock
 	disk->minors		= 1;
 	disk->fops			= &bp_fops;
 	disk->private_data	= bpd;
@@ -138,9 +156,6 @@ static int brd_alloc(const char * name)
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, disk->queue);
 
-	bpd->dev.groups = bp_dev_group;
-
-
 	err = add_disk(disk);
 	if (err)
 		goto out_cleanup_disk;
@@ -150,20 +165,14 @@ static int brd_alloc(const char * name)
 out_cleanup_disk:
 	put_disk(disk);
 out_free_dev:
-	list_del(&bpd->bpd_list);
+	list_del(&bpd->bpd_list); // lock!
 	kfree(bpd);
 	return err;
 }
 
-static int bp_create(const char * name)
-{
-    struct bp_dev * dev;
-    
-}
-
 static int create_set(const char *val, const struct kernel_param *kp)
 {
-    return bp_create(val);
+    return bp_alloc(val);
 }
 
 static const struct block_device_operations bp_fops = {
@@ -179,35 +188,27 @@ MODULE_PARM_DESC(create, "Create new named persistent device");
 
 static void bp_cleanup(void)
 {
-    // remove devices
+    // remove devices/disks
 } 
-
-static struct platform_driver bp_driver = {
-	.driver = {
-		   .name = "block_persist",
-	},
-};
 
 static int bp_major;
 static int __init bp_init(void)
 {
 	int err;
 
-	bp_major = register_blkdev(0, "block_persist");
+	bp_major = register_blkdev(0, "bp");
     if (bp_major < 0)
 		err = -EIO;
         goto out_free;
 	}
 
-	err = platform_driver_register(&bp_driver);
-	if (err)
-		goto out_unreg_blkdev;
+	
 	
 	pr_info("block_persist: module loaded\n");
 	return 0;
 
 out_unreg_blkdev:
-	unregister_blkdev(bp_major, "block_persist");
+	unregister_blkdev(bp_major, "bp");
 out_free:
 	bp_cleanup();
 
@@ -217,7 +218,7 @@ out_free:
 
 static void __exit bp_exit(void)
 {
-	unregister_blkdev(bp_major, "block_persist");
+	unregister_blkdev(bp_major, "bp");
 	bp_cleanup();
 
 	pr_info("brd: module unloaded\n");
