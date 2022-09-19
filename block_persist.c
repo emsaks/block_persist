@@ -41,31 +41,16 @@ static unsigned int part_in_flight(struct block_device *part)
 	return inflight;
 }
 
-/* adapted from dm.c: dm_wait_for_bios_completion */
-// don't know jow all this wq business works...
-static int wait_for_io_completion(struct block_device *bdev, unsigned int task_state)
+static int wait_for_io_completion(struct block_device *bdev, unsigned long timeout)
 {
-	int r = 0;
-	DEFINE_WAIT(wait);
-
-	while (true) {
-		prepare_to_wait(&md->wait, &wait, task_state);
-
-		if (!part_in_flight(md))
-			break;
-
-		if (signal_pending_state(task_state, current)) {
-			r = -EINTR;
-			break;
-		}
-
+	unsigned long timeout_jiffies = jiffies + timout;
+	while (part_in_flight(bdev)) {
+		if (jiffies >= timeout_jiffies)
+			return -ETIMEDOUT;
 		io_schedule();
 	}
-	finish_wait(&md->wait, &wait);
 
-	smp_rmb();
-
-	return r;
+	return 0;
 }
 
 #define dev_to_bp(dev) ((struct bp_dev *)dev_to_disk(dev)->private_data)
