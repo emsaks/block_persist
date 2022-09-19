@@ -8,6 +8,7 @@
 #include <linux/mutex.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
+#include <linux/part_stat.h>
 
 struct bp_dev {
 	struct device dev;
@@ -23,6 +24,49 @@ struct bp_dev {
 	int sysfs_inited;
 };
 // ll of devices
+
+/* cribbed from genhd.c */
+static unsigned int part_in_flight(struct block_device *part)
+{
+	unsigned int inflight = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		inflight += part_stat_local_read_cpu(part, in_flight[0], cpu) +
+			    part_stat_local_read_cpu(part, in_flight[1], cpu);
+	}
+	if ((int)inflight < 0)
+		inflight = 0;
+
+	return inflight;
+}
+
+/* adapted from dm.c: dm_wait_for_bios_completion */
+// don't know jow all this wq business works...
+static int wait_for_io_completion(struct block_device *bdev, unsigned int task_state)
+{
+	int r = 0;
+	DEFINE_WAIT(wait);
+
+	while (true) {
+		prepare_to_wait(&md->wait, &wait, task_state);
+
+		if (!part_in_flight(md))
+			break;
+
+		if (signal_pending_state(task_state, current)) {
+			r = -EINTR;
+			break;
+		}
+
+		io_schedule();
+	}
+	finish_wait(&md->wait, &wait);
+
+	smp_rmb();
+
+	return r;
+}
 
 #define dev_to_bp(dev) ((struct bp_dev *)dev_to_disk(dev)->private_data)
 
