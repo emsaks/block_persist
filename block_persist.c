@@ -41,12 +41,15 @@ static unsigned int part_in_flight(struct block_device *part)
 	return inflight;
 }
 
-static int wait_for_io_completion(struct block_device *bdev, unsigned long timeout)
+static int wait_for_io_completion(struct block_device *bdev, unsigned long timeout, int task_state)
 {
 	unsigned long timeout_jiffies = jiffies + timout;
 	while (part_in_flight(bdev)) {
-		if (jiffies >= timeout_jiffies)
+		if (timeout && jiffies >= timeout_jiffies)
 			return -ETIMEDOUT;
+		if (signal_pending_state(task_state, current))
+			return -EINTR;
+		
 		io_schedule();
 	}
 
