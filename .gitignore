@@ -1,0 +1,11 @@
+/*.cmd
+/*.o
+/*.mod
+/*.ko
+/*.mod.c
+/*.symvers
+/*.d
+/.vscode
+/modules.order
+/params
+Makefile

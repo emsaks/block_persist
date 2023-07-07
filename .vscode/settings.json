@@ -2,6 +2,8 @@
     "files.associations": {
         "*.tcc": "c",
         "random": "c",
-        "streambuf": "c"
+        "streambuf": "c",
+        "part_stat.h": "c",
+        "semaphore.h": "c"
     }
 }
