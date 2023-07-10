@@ -10,8 +10,9 @@
 #include <linux/slab.h>
 #include <linux/part_stat.h>
 #include <linux/completion.h>
+#include <linux/backing-dev.h>
 
-#define BT_VER "1"
+#define BT_VER "6"
 static int bt_major;
 static int bt_minors = 0;
 static char * holder = "blockthru"BT_VER "held disk.";
@@ -56,7 +57,6 @@ static struct bio_stash * bt_get_stash(struct bt_dev * bt)
 {
 	struct bio_stash * stash = NULL;
 	mutex_lock(&bt->lock);
-	if (!bt->exiting) {
 		stash = list_first_entry_or_null(&bt->free, struct bio_stash, entry);
 		if (stash) {
 			list_move(&stash->entry, &bt->inflight);
@@ -66,7 +66,6 @@ static struct bio_stash * bt_get_stash(struct bt_dev * bt)
 			stash->bt = bt;
 			list_add(&stash->entry, &bt->inflight);
 		}
-	}
 	mutex_unlock(&bt->lock);
 
 	return stash;
@@ -110,7 +109,7 @@ static void bt_submit_internal(struct bio * bio)
 	struct bio_stash * stash = (struct bio_stash *)bio->bi_private;
 	struct bt_dev * bt = stash->bt;
 
-	stash->tries_remaining--;
+	--stash->tries_remaining;
 
 retry:	
 	mutex_lock(&bt->lock);
@@ -169,11 +168,16 @@ static void bt_io_end(struct bio * bio)
 
 static int bt_suspend(struct bt_dev * bt)
 {
+	int err = 0;
 	mutex_lock(&bt->lock);
-		reinit_completion(&bt->resume);
-		bt->suspend = 1;
+		if (bt->exiting)
+			err = -EBUSY;
+		else {
+			reinit_completion(&bt->resume);
+			bt->suspend = 1;
+		}
 	mutex_unlock(&bt->lock);
-	return 0;
+	return err;
 }
 
 static int bt_resume(struct bt_dev * bt)
@@ -189,23 +193,15 @@ static int bt_resume(struct bt_dev * bt)
 static int bt_target_swap(struct bt_dev *bt, const char * path, size_t count)
 {
 	struct block_device * bd, *putdev;
-	int exiting = 0;
-
-	mutex_lock(&bt->lock);
-	exiting = bt->exiting;
-	mutex_unlock(&bt->lock);
-
+	
 	if (path[0] == '\0') {
 		mutex_lock(&bt->lock);
 		putdev = bt_put_dev(bt, bt->target);
 		bt->target = NULL;
 		mutex_unlock(&bt->lock);
 		if (putdev) blkdev_put(putdev, FMODE_READ);
-		if (exiting) complete(&bt->exit);
 		return 0;
 	}
-
-	if (exiting) return -ENODEV;
 
 	bd = blkdev_get_by_path(path, FMODE_READ, holder);
 	if (IS_ERR(bd))
@@ -229,51 +225,22 @@ static int bt_target_swap(struct bt_dev *bt, const char * path, size_t count)
 	return 0;
 }
 
-static void bt_sysfs_exit(struct bt_dev *bt);
-
-static int bt_delete(struct bt_dev *bt)
-{
-	struct bio_stash * stash, * n;
-	int has_inflight = 0;
-
-	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	del_gendisk(bt->disk);
-	put_disk(bt->disk);
-	
-	bt_target_swap(bt, "", 1); // todo: think this through, and the code in target_swap for exit == 1
-	mutex_lock(&bt->lock);
-		bt->exiting = 1;
-		has_inflight = !list_empty(&bt->inflight);
-	mutex_unlock(&bt->lock);
-	
-	if (has_inflight)
-		wait_for_completion(&bt->exit);
-	
-	list_for_each_entry_safe(stash, n, &bt->free, entry)
-		kfree(stash);
-
-	blk_cleanup_disk(bt->disk);
-	kfree (bt);
-
-	return 0;
-}
-
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	struct bt_dev * bt = dev_to_bt(dev);
-	return sysfs_emit(buf, "%s\n", bt->suspend ? "1" : "0");
+	return sysfs_emit(buf, "%s\n",dev_to_bt(dev)->suspend ? "1" : "0");
 }
 
 static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
+	int err;
 	if (count <= 0)
 		return count;
 	if (buf[0] == '1') {
-		bt_suspend(dev_to_bt(dev));
+		err = bt_suspend(dev_to_bt(dev));
 	} else if (buf[0] == '0') {
-		bt_resume(dev_to_bt(dev));
+		err = bt_resume(dev_to_bt(dev));
 	}
-	return count;
+	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(suspend);
 
@@ -285,8 +252,8 @@ static ssize_t target_show(struct device *dev, struct device_attribute *attr, ch
 
 static ssize_t target_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-    bt_target_swap(dev_to_bt(dev), buf, count);
-	return count;
+    int err = bt_target_swap(dev_to_bt(dev), buf, count);
+	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(target);
 
@@ -297,7 +264,7 @@ static ssize_t port_show(struct device *dev, struct device_attribute *attr, char
 
 static ssize_t port_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-    return 0;
+    return count;
 }
 static DEVICE_ATTR_RW(port);
 
@@ -323,14 +290,14 @@ static struct attribute_group bt_attribute_group = {
 	.attrs= bt_attrs,
 };
 
+
 static void bt_submit_bio(struct bio *bio)
 {
 	struct bt_dev * bt= bio->bi_bdev->bd_disk->private_data;
 	struct bio_stash * stash = bt_get_stash(bt);
 
 	if (!stash) { // we are currently exiting or malloc fail
-		pr_warn("Setting error on sumit while exiting or malloc fail\n");
-		bio->bi_status = bt->exiting ? BLK_STS_MEDIUM : BLK_STS_RESOURCE;
+		bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(bio);
 		return;
 	}
@@ -343,6 +310,44 @@ static void bt_submit_bio(struct bio *bio)
 
 	bt_submit_internal(bio);
 }
+
+#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
+static int bt_delete(struct bt_dev *bt)
+{
+	struct bio_stash * stash, * n;
+	int has_inflight = 0;
+
+	mutex_lock(&bt->lock);
+	if (!bt->suspend)
+		bt->exiting = 1;
+	mutex_unlock(&bt->lock);
+	if (!bt->exiting)
+		return -EBUSY;
+	
+	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
+	del_gendisk(bt->disk);
+	put_disk(bt->disk);
+	
+	mutex_lock(&bt->lock);
+		has_inflight = !list_empty(&bt->inflight);
+	mutex_unlock(&bt->lock);
+	if (has_inflight)
+		wait_for_completion(&bt->exit);
+	
+	if (bt->target) blkdev_put(bt->target, FMODE_READ);
+
+	blk_cleanup_disk(bt->disk);
+
+	list_for_each_entry_safe(stash, n, &bt->free, entry)
+		kfree(stash);
+	
+	kfree (bt);
+
+	module_put(THIS_MODULE);
+
+	return 0;
+}
+
 
 static const struct block_device_operations bt_fops = {
 	.owner      =	THIS_MODULE,
@@ -396,11 +401,16 @@ static int bt_alloc(const char * name)
 	if (err)
 		goto out_cleanup_disk;
 
+	disk->bdi->ra_pages = 0; // must be after add_disk
+
 	err = sysfs_create_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	if (err) {
-		pr_warn("sysfs init failed with code %i", ret);
+		pr_warn("sysfs init failed with code %i", err);
 		goto out_del_disk;
 	}
+
+	if(!try_module_get(THIS_MODULE))
+		goto out_del_disk;
 
 	mutex_lock(&bt_lock);
 		list_add(&bt->entry, &bt_devs);
@@ -421,18 +431,29 @@ out_free_dev:
 
 static int delete_set(const char *val, const struct kernel_param *kp)
 {
+	int err = 0;
 	struct bt_dev * bt, * n;
-
 	mutex_lock(&bt_lock);
 	list_for_each_entry_safe(bt, n, &bt_devs, entry) {
 		if (!strncmp(val, bt->disk->disk_name, sizeof(bt->disk->disk_name))) {
-				list_del(&bt->entry);
-				break;
+			list_del(&bt->entry);
+			break;
 		}
 	}
 	mutex_unlock(&bt_lock);
 
-	return list_entry_is_head(bt, &bt_devs, entry) ? -ENODEV : bt_delete(bt);
+	if list_entry_is_head(bt, &bt_devs, entry)
+		return -ENODEV;
+
+	err = bt_delete(bt);
+	if (!err)
+		return 0;
+
+	mutex_lock(&bt_lock);
+	list_add(&bt->entry, &bt_devs);
+	mutex_unlock(&bt_lock);
+
+	return err;
 }
 
 struct kernel_param_ops delete_ops = { 
@@ -458,8 +479,9 @@ static void bt_cleanup(void)
 {
 	struct list_head * l, * n;
 	mutex_lock(&bt_lock);
-		list_for_each_safe(l, n, &bt_devs)
+		list_for_each_safe(l, n, &bt_devs) {
 			bt_delete((struct bt_dev *)l);
+		}
 	mutex_unlock(&bt_lock);
 } 
 
@@ -478,9 +500,9 @@ static int __init bt_init(void)
 
 static void __exit bt_exit(void)
 {
-	unregister_blkdev(bt_major, "bt"BT_VER);
 	bt_cleanup();
-
+	unregister_blkdev(bt_major, "bt"BT_VER);
+	
 	pr_info("blockthru"BT_VER": module unloaded\n");
 }
 

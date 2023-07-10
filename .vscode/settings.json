@@ -4,6 +4,8 @@
         "random": "c",
         "streambuf": "c",
         "part_stat.h": "c",
-        "semaphore.h": "c"
+        "semaphore.h": "c",
+        "moduleparam.h": "c",
+        "init.h": "c"
     }
 }
