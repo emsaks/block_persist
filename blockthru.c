@@ -305,26 +305,17 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 	e = register_kretprobe(probe);
     if (e < 0) {
         pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
+		probe->handler = NULL; // this will flag that the probe has not been set
         return e;
     }
 
 	return 0;
 }
-static int plant_probes(struct kretprobe * add_probe, struct kretprobe * del_probe)
-{
-	if (plant_probe(del_probe, del_entry, del_ret, "del_gendisk", 0)) return -1;
-	//if (plant_probe(add_probe, add_entry, add_ret, add_func, sizeof(struct add_data))) {
-	//	unregister_kretprobe(del_probe);
-	//	return -1;
-	//}
-	
-	return 0;
-}
 
 static void rip_probes(struct kretprobe * add_probe, struct kretprobe * del_probe)
 {
-	//unregister_kretprobe(add_probe);
-	unregister_kretprobe(del_probe);
+	if (add_probe->handler) unregister_kretprobe(add_probe);
+	if (del_probe->handler) unregister_kretprobe(del_probe);
 }
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -523,9 +514,15 @@ static int bt_alloc(const char * name)
 		goto out_del_disk;
 	}
 
+	err = plant_probe(&bt->del_probe, del_entry, del_ret, "del_gendisk", 0);
+	if (err) {
+		
+	}
+	}
 	err = plant_probes(&bt->add_probe, &bt->del_probe);
 	if (err)
-		pw("Failed to plant probes\n");
+		
+	
 
 	if(!try_module_get(THIS_MODULE))
 		goto out_del_disk;
