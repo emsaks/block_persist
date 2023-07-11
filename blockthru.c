@@ -41,6 +41,7 @@ struct bt_dev {
 
 	int exiting;
 	struct completion exit;
+	struct work_struct delete;
 
 	int tries;
 	struct list_head free;
@@ -81,7 +82,7 @@ static struct block_device * bt_put_dev(struct bt_dev * bt, struct block_device 
 			return NULL;
 	}
 
-	return bd;
+	return bd;	
 }
 
 static void bt_put_stash(struct bio_stash * stash)
@@ -268,17 +269,18 @@ static ssize_t port_store(struct device *dev, struct device_attribute *attr, con
 }
 static DEVICE_ATTR_RW(port);
 
-/* // this is unsafe/cause a lockup
+void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	bt_delete(dev_to_bt(dev));
+	struct bt_dev * bt = dev_to_bt(dev);
+	INIT_WORK(&bt->delete, bt_remove_worker);
+	schedule_work(&bt->delete);
     return count;
 }
 static DEVICE_ATTR_WO(delete);
-*/
 
 static struct attribute *bt_attrs[] = {
-	//&dev_attr_delete.attr,
+	&dev_attr_delete.attr,
 	&dev_attr_target.attr,
 	&dev_attr_suspend.attr,
 	&dev_attr_port.attr,
@@ -310,44 +312,6 @@ static void bt_submit_bio(struct bio *bio)
 
 	bt_submit_internal(bio);
 }
-
-#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
-static int bt_delete(struct bt_dev *bt)
-{
-	struct bio_stash * stash, * n;
-	int has_inflight = 0;
-
-	mutex_lock(&bt->lock);
-	if (!bt->suspend)
-		bt->exiting = 1;
-	mutex_unlock(&bt->lock);
-	if (!bt->exiting)
-		return -EBUSY;
-	
-	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	del_gendisk(bt->disk);
-	put_disk(bt->disk);
-	
-	mutex_lock(&bt->lock);
-		has_inflight = !list_empty(&bt->inflight);
-	mutex_unlock(&bt->lock);
-	if (has_inflight)
-		wait_for_completion(&bt->exit);
-	
-	if (bt->target) blkdev_put(bt->target, FMODE_READ);
-
-	blk_cleanup_disk(bt->disk);
-
-	list_for_each_entry_safe(stash, n, &bt->free, entry)
-		kfree(stash);
-	
-	kfree (bt);
-
-	module_put(THIS_MODULE);
-
-	return 0;
-}
-
 
 static const struct block_device_operations bt_fops = {
 	.owner      =	THIS_MODULE,
@@ -428,32 +392,82 @@ out_free_dev:
 	return err;
 }
 
+#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
+static int bt_del(struct bt_dev *bt)
+{
+	struct bio_stash * stash, * n;
+	int has_inflight = 0;
+	int already_exiting = 0;
+	mutex_lock(&bt->lock);
+	if (bt->exiting)
+		already_exiting = 1;
+	else if (!bt->suspend)
+		bt->exiting = 1;
+	mutex_unlock(&bt->lock);
+	if (!bt->exiting || already_exiting)
+		return -EBUSY;
+	
+	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
+	del_gendisk(bt->disk);
+	put_disk(bt->disk);
+	
+	mutex_lock(&bt->lock);
+		has_inflight = !list_empty(&bt->inflight);
+	mutex_unlock(&bt->lock);
+	if (has_inflight)
+		wait_for_completion(&bt->exit);
+	
+	if (bt->target) blkdev_put(bt->target, FMODE_READ);
+
+	blk_cleanup_disk(bt->disk);
+
+	list_for_each_entry_safe(stash, n, &bt->free, entry)
+		kfree(stash);
+	
+	return 0;
+}
+
+static void bt_put(struct bt_dev * bt)
+{
+	kfree (bt);
+	module_put(THIS_MODULE);
+}
+
+static int bt_remove(struct bt_dev *bt)
+{
+	int err = bt_del(bt);
+	if (err) 
+		return err;
+
+	mutex_lock(&bt_lock);
+		list_del(&bt->entry);
+	mutex_unlock(&bt_lock);
+	bt_put(bt);
+	return 0;
+}
+
+void bt_remove_worker(struct work_struct *work)
+{
+	struct bt_dev * bt = container_of(work, struct bt_dev, delete);
+	int err = bt_remove(bt);
+	if (err) 
+		pr_warn("Failed to delete blockthru disk: %s with error code %i\n", bt->disk->disk_name, err);
+}
 
 static int delete_set(const char *val, const struct kernel_param *kp)
 {
-	int err = 0;
 	struct bt_dev * bt, * n;
 	mutex_lock(&bt_lock);
 	list_for_each_entry_safe(bt, n, &bt_devs, entry) {
-		if (!strncmp(val, bt->disk->disk_name, sizeof(bt->disk->disk_name))) {
-			list_del(&bt->entry);
+		if (!strncmp(val, bt->disk->disk_name, sizeof(bt->disk->disk_name)))
 			break;
-		}
 	}
 	mutex_unlock(&bt_lock);
 
 	if list_entry_is_head(bt, &bt_devs, entry)
 		return -ENODEV;
 
-	err = bt_delete(bt);
-	if (!err)
-		return 0;
-
-	mutex_lock(&bt_lock);
-	list_add(&bt->entry, &bt_devs);
-	mutex_unlock(&bt_lock);
-
-	return err;
+	return bt_remove(bt);
 }
 
 struct kernel_param_ops delete_ops = { 
@@ -477,12 +491,7 @@ MODULE_PARM_DESC(create, "Create new named passthru device");
 
 static void bt_cleanup(void)
 {
-	struct list_head * l, * n;
-	mutex_lock(&bt_lock);
-		list_for_each_safe(l, n, &bt_devs) {
-			bt_delete((struct bt_dev *)l);
-		}
-	mutex_unlock(&bt_lock);
+	
 } 
 
 
