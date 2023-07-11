@@ -11,8 +11,14 @@
 #include <linux/part_stat.h>
 #include <linux/completion.h>
 #include <linux/backing-dev.h>
+#include <linux/kprobes.h>
+
+#include "regs.h"
 
 #define BT_VER "6"
+
+#define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
+
 static int bt_major;
 static int bt_minors = 0;
 static char * holder = "blockthru"BT_VER "held disk.";
@@ -22,7 +28,7 @@ struct bt_dev;
 struct bio_stash {
 	struct list_head entry;
 	struct bt_dev * bt;
-	struct block_device * target;
+	struct block_device * backing;
 	void * bi_private;
 	bio_end_io_t * bi_end_io;
 	int tries_remaining;
@@ -30,22 +36,35 @@ struct bio_stash {
 
 struct bt_dev {
 	struct list_head entry;
-	struct device dev;
+
+	struct mutex lock;
+	struct gendisk * disk;
+
 	int suspend;
 	struct completion resume;
 
-	char target_path[PATH_MAX];
-	struct mutex lock;
-	struct gendisk * disk;
-	struct block_device * target;
+	struct block_device * backing;
+	char backing_path[PATH_MAX];
+	bool block_if_no_backing;
 
 	int exiting;
 	struct completion exit;
+	/*  we can't delete ourself from within a our attribute code, 
+		because the delete code hangs waiting for all attributes
+		to return, so we need a worker for that */
 	struct work_struct delete;
 
 	int tries;
 	struct list_head free;
 	struct list_head inflight;
+
+	struct kretprobe add_probe, del_probe;
+
+	char *	path_pattern;
+	int 	addtl_depth;
+
+	uint swapped_count;
+	unsigned long jiffies_when_removed, jiffies_when_added;
 };
 
 // ll of devices
@@ -72,13 +91,15 @@ static struct bio_stash * bt_get_stash(struct bt_dev * bt)
 	return stash;
 }
 
-// return device if it should be released; USE LOCK! ENSURE CALLER cleared its stash device
+/* return device if it should be released; USE LOCK! 
+	ENSURE CALLER cleared its stash->backing, 
+	otherwise it's stash will prevent free'ing */
 static struct block_device * bt_put_dev(struct bt_dev * bt, struct block_device *bd)
 {
 	struct bio_stash * s;
 
 	list_for_each_entry(s, &bt->inflight, entry) {
-		if (s->target == bd)
+		if (s->backing == bd)
 			return NULL;
 	}
 
@@ -93,9 +114,9 @@ static void bt_put_stash(struct bio_stash * stash)
 
 	mutex_lock(&bt->lock);
 	list_move(&stash->entry, &bt->free); // we can safely call bt_put_dev now
-	if (bt->target != stash->target)
-		putdev = bt_put_dev(bt, stash->target);
-	stash->target = NULL;
+	if (bt->backing != stash->backing)
+		putdev = bt_put_dev(bt, stash->backing);
+	stash->backing = NULL;
 	exit = bt->exiting && list_empty(&bt->inflight);
 	mutex_unlock(&bt->lock);
 	
@@ -106,7 +127,7 @@ static void bt_put_stash(struct bio_stash * stash)
 // assume bio is already pointing to *our* endio and has stash in bi_private
 static void bt_submit_internal(struct bio * bio)
 {
-	int suspended;
+	int suspend;
 	struct bio_stash * stash = (struct bio_stash *)bio->bi_private;
 	struct bt_dev * bt = stash->bt;
 
@@ -114,23 +135,23 @@ static void bt_submit_internal(struct bio * bio)
 
 retry:	
 	mutex_lock(&bt->lock);
-	if (!(suspended = bt->suspend) && bt->target != NULL)
-			stash->target = bt->target; // this must be set under lock so the bd won't be swapped, free'd underneath us
+	suspend = bt->suspend || (bt->block_if_no_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
+	if (!suspend && bt->backing != NULL)
+		stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
+	else stash->backing = NULL;
 	mutex_unlock(&bt->lock);
 
-	if (suspended) {
+	if (suspend) {
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
 		goto retry;
-	} else if (stash->target == NULL) {
-		// todo: follow rule for block_on_empty // will we force suspend on NULL or keep a separate flag?
-		// if exiting, do not block_on_empty!
-		pr_warn("Setting error on no target\n");
-		bio_set_dev(bio, bt->disk->part0); // in case we are a retry that targets as different dev; perhaps unneccessary.
-		bio->bi_status = BLK_STS_MEDIUM;
+	} else if (stash->backing == NULL) {
+		pr_warn("Setting STS_OFFLINE because there's no backing\n");
+		bio_set_dev(bio, bt->disk->part0); // in case we are a retry that backed a different dev; perhaps unneccessary.
+		bio->bi_status = BLK_STS_OFFLINE;
 		stash->tries_remaining = 0;
 		bio_endio(bio);
 	} else {
-		bio_set_dev(bio, stash->target);
+		bio_set_dev(bio, stash->backing);
 		submit_bio_noacct(bio);
 	}
 }
@@ -139,16 +160,15 @@ static void bt_io_end(struct bio * bio)
 {
 	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
 	struct block_device * putdev = NULL;
-
-	// if retrying, put the device ourself (because we are not calling put_stash)
-	// if no target, preserve the error code and don't bother retrying
-	if (bio->bi_status == BLK_STS_MEDIUM && stash->target) {
+ 
+	if (bio->bi_status == BLK_STS_OFFLINE && stash->backing /* otherwise the disk was dead on submit: preserve the STS_OFFLINE */) {
 		if (stash->tries_remaining > 0) {
 			bio->bi_status = BLK_STS_OK;
-			putdev = stash->target;
+			putdev = stash->backing;
+			// put the device ourself (because we are not calling put_stash)
 			mutex_lock(&stash->bt->lock);
-			stash->target = NULL;
-			if (stash->bt->target != putdev)
+			stash->backing = NULL; // so bt_put_dev will work properly
+			if (stash->bt->backing != putdev)
 				putdev = bt_put_dev(stash->bt, putdev);
 			mutex_unlock(&stash->bt->lock);
 			if (putdev) blkdev_put(putdev, FMODE_READ);
@@ -156,7 +176,7 @@ static void bt_io_end(struct bio * bio)
 			bt_submit_internal(bio);
 			return;
 		} else {
-			pr_warn("Setting error on target MEDIUM fail\n");
+			pr_warn("Switching STS_OFFLINE to STS_IO error.\n");
 			bio_io_error(bio);
 		}
 	}
@@ -191,18 +211,39 @@ static int bt_resume(struct bt_dev * bt)
 	return 0;
 }
 
-static int bt_target_swap(struct bt_dev *bt, const char * path, size_t count)
+/**
+ * @brief Drop current backing device. Close if not inflight.
+ * 
+ * @param bt 
+ * @param bd Optional. Guarantee that the backing being released == bd 
+ */
+static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
+{
+	struct block_device * putdev;
+	unsigned long uptime = jiffies - bt->jiffies_when_added;
+
+	if (!bt->backing)
+		return;
+
+	mutex_lock(&bt->lock);
+	if (!disk || bt->backing->bd_disk == disk) {
+		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+				bt->backing_path,
+				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+		bt->jiffies_when_removed = jiffies;
+		putdev = bt_put_dev(bt, bt->backing);
+		bt->backing = NULL;
+		reinit_completion(&bt->resume); // so block_on_no_backing will have what to wait on
+	}
+	mutex_unlock(&bt->lock); 
+	if (putdev) blkdev_put(putdev, FMODE_READ);
+}
+
+static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
 {
 	struct block_device * bd, *putdev;
-	
-	if (path[0] == '\0') {
-		mutex_lock(&bt->lock);
-		putdev = bt_put_dev(bt, bt->target);
-		bt->target = NULL;
-		mutex_unlock(&bt->lock);
-		if (putdev) blkdev_put(putdev, FMODE_READ);
-		return 0;
-	}
+	int resume = 0;
+	unsigned long uptime;
 
 	bd = blkdev_get_by_path(path, FMODE_READ, holder);
 	if (IS_ERR(bd))
@@ -210,20 +251,80 @@ static int bt_target_swap(struct bt_dev *bt, const char * path, size_t count)
 	if (!bd)
 		return -ENODEV;
 
-	pr_warn("Swapping target on %s to %s\n", bt->disk->disk_name, path);
+	if (bt->backing) {
+		uptime = jiffies - bt->jiffies_when_added;
+		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+			bt->backing_path,
+			uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+	}
+
+	pr_warn("Swapping backing to %s\n", path);
 
 	mutex_lock(&bt->lock);
-		putdev = bt_put_dev(bt, bt->target);
-		bt->target = bd;
-		strncpy((char*)bt->target_path, path, count);
-
+		bt->jiffies_when_added = jiffies;
+		putdev = bt_put_dev(bt, bt->backing);
+		bt->backing = bd;
+		strncpy((char*)bt->backing_path, path, count);
+		resume = !bt->suspend; // in case we previously had a dead backing and block_on_no_backing was set
 		if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
 			kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
 	mutex_unlock(&bt->lock);
 
+	if (resume) complete_all(&bt->resume);
 	if (putdev) blkdev_put(putdev, FMODE_READ);
 
 	return 0;
+}
+
+static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct gendisk * disk = (struct gendisk *)regs->ARG1;
+	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, del_probe);
+
+	if (IS_ERR_OR_NULL(disk))
+		return 0;
+
+	bt_backing_release(bt, disk);
+
+	return 0;
+}
+
+static int del_ret(struct kretprobe_instance *ri, struct pt_regs *regs) { return 0; }
+
+static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kretprobe_handler_t ret, char * symbol_name, size_t data_size)
+{
+	int e;
+
+	memset(probe, 0, sizeof(*probe));
+	probe->handler        = ret,
+    probe->entry_handler  = entry,
+    probe->maxactive      = 20,
+	probe->data_size	  = data_size;
+	probe->kp.symbol_name = symbol_name;
+
+	e = register_kretprobe(probe);
+    if (e < 0) {
+        pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
+        return e;
+    }
+
+	return 0;
+}
+static int plant_probes(struct kretprobe * add_probe, struct kretprobe * del_probe)
+{
+	if (plant_probe(del_probe, del_entry, del_ret, "del_gendisk", 0)) return -1;
+	//if (plant_probe(add_probe, add_entry, add_ret, add_func, sizeof(struct add_data))) {
+	//	unregister_kretprobe(del_probe);
+	//	return -1;
+	//}
+	
+	return 0;
+}
+
+static void rip_probes(struct kretprobe * add_probe, struct kretprobe * del_probe)
+{
+	//unregister_kretprobe(add_probe);
+	unregister_kretprobe(del_probe);
 }
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -245,18 +346,25 @@ static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RW(suspend);
 
-static ssize_t target_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	strncpy(buf, dev_to_bt(dev)->target_path, sizeof(dev_to_bt(dev)->target_path));
+	strncpy(buf, dev_to_bt(dev)->backing_path, sizeof(dev_to_bt(dev)->backing_path));
 	return strlen(buf);
 }
 
-static ssize_t target_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-    int err = bt_target_swap(dev_to_bt(dev), buf, count);
+	int err;
+
+	if (count > 0 && buf[0] == '\0') {
+		bt_backing_release(dev_to_bt(dev), NULL);
+		return count;
+	}
+
+    err = bt_backing_swap(dev_to_bt(dev), buf, count);
 	return err < 0 ? err : count;
 }
-static DEVICE_ATTR_RW(target);
+static DEVICE_ATTR_RW(backing);
 
 static ssize_t port_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -268,6 +376,44 @@ static ssize_t port_store(struct device *dev, struct device_attribute *attr, con
     return count;
 }
 static DEVICE_ATTR_RW(port);
+
+static ssize_t tries_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%i", dev_to_bt(dev)->tries);
+}
+
+static ssize_t tries_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int err;
+	unsigned long v;
+
+	err = kstrtoul(buf, 10, &v);
+	if (err || v > UINT_MAX)
+		return -EINVAL;
+
+	dev_to_bt(dev)->tries = v;
+
+    return count;
+}
+static DEVICE_ATTR_RW(tries);
+
+static ssize_t block_if_no_backing_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%i", dev_to_bt(dev)->tries);
+}
+
+static ssize_t block_if_no_backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct bt_dev * bt = dev_to_bt(dev);
+	if (count > 0) {
+		if (buf[0] == '1') bt->block_if_no_backing = 1;
+		else if (buf[0] == '0') bt->block_if_no_backing = 0;
+		else return -EINVAL;
+	}
+
+    return count;
+}
+static DEVICE_ATTR_RW(block_if_no_backing);
 
 void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -281,9 +427,11 @@ static DEVICE_ATTR_WO(delete);
 
 static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
-	&dev_attr_target.attr,
+	&dev_attr_backing.attr,
 	&dev_attr_suspend.attr,
 	&dev_attr_port.attr,
+	&dev_attr_tries.attr,
+	&dev_attr_block_if_no_backing.attr,
 	NULL,
 };
 
@@ -353,6 +501,8 @@ static int bt_alloc(const char * name)
 	disk->fops			= &bt_fops;
 	disk->private_data	= bt;
 
+	// todo: sector size; do we need it?
+
 	strlcpy(disk->disk_name, buf, DISK_NAME_LEN);
 	set_disk_ro(disk, true);
 	set_capacity(disk, 0);
@@ -369,9 +519,13 @@ static int bt_alloc(const char * name)
 
 	err = sysfs_create_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	if (err) {
-		pr_warn("sysfs init failed with code %i", err);
+		pw("sysfs init failed with code %i", err);
 		goto out_del_disk;
 	}
+
+	err = plant_probes(&bt->add_probe, &bt->del_probe);
+	if (err)
+		pw("Failed to plant probes\n");
 
 	if(!try_module_get(THIS_MODULE))
 		goto out_del_disk;
@@ -407,6 +561,7 @@ static int bt_del(struct bt_dev *bt)
 	if (!bt->exiting || already_exiting)
 		return -EBUSY;
 	
+	rip_probes(&bt->add_probe, &bt->del_probe);
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	del_gendisk(bt->disk);
 	put_disk(bt->disk);
@@ -417,7 +572,7 @@ static int bt_del(struct bt_dev *bt)
 	if (has_inflight)
 		wait_for_completion(&bt->exit);
 	
-	if (bt->target) blkdev_put(bt->target, FMODE_READ);
+	if (bt->backing) blkdev_put(bt->backing, FMODE_READ);
 
 	blk_cleanup_disk(bt->disk);
 
@@ -442,6 +597,7 @@ static int bt_remove(struct bt_dev *bt)
 	mutex_lock(&bt_lock);
 		list_del(&bt->entry);
 	mutex_unlock(&bt_lock);
+
 	bt_put(bt);
 	return 0;
 }
@@ -487,13 +643,10 @@ struct kernel_param_ops create_ops = {
 module_param_cb(create, &create_ops, NULL, 0664);
 MODULE_PARM_DESC(create, "Create new named passthru device");
 
-
-
 static void bt_cleanup(void)
 {
 	
 } 
-
 
 static int __init bt_init(void)
 {
