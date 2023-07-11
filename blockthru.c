@@ -215,7 +215,7 @@ static int bt_resume(struct bt_dev * bt)
  * @brief Drop current backing device. Close if not inflight.
  * 
  * @param bt 
- * @param bd Optional. Guarantee that the backing being released == bd 
+ * @param disk Optional. Guarantee that the backing being released is a child of <disk>
  */
 static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 {
