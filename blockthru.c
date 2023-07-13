@@ -145,7 +145,7 @@ retry:
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
 		goto retry;
 	} else if (stash->backing == NULL) {
-		pr_warn("Setting STS_OFFLINE because there's no backing\n");
+		pw("Setting STS_OFFLINE because there's no backing\n");
 		bio_set_dev(bio, bt->disk->part0); // in case we are a retry that backed a different dev; perhaps unneccessary.
 		bio->bi_status = BLK_STS_OFFLINE;
 		stash->tries_remaining = 0;
@@ -187,8 +187,21 @@ static void bt_io_end(struct bio * bio)
 	bio_endio(bio);
 }
 
-static int bt_suspend(struct bt_dev * bt)
+static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
 {
+	int flushed;
+
+	mutex_lock(&bt->lock);
+	flushed = bt_put_dev(bt , bd) || !bt->suspend;
+	mutex_unlock(&bt->lock);
+	
+	return flushed;
+}
+
+static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
+{
+	struct block_device * bd;
+
 	int err = 0;
 	mutex_lock(&bt->lock);
 		if (bt->exiting)
@@ -196,8 +209,11 @@ static int bt_suspend(struct bt_dev * bt)
 		else {
 			reinit_completion(&bt->resume);
 			bt->suspend = 1;
+			bd = bt->backing;
 		}
 	mutex_unlock(&bt->lock);
+	
+
 	return err;
 }
 
@@ -239,6 +255,8 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 	if (putdev) blkdev_put(putdev, FMODE_READ);
 }
 
+
+
 static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
 {
 	struct block_device * bd, *putdev;
@@ -258,7 +276,7 @@ static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
 			uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 	}
 
-	pr_warn("Swapping backing to %s\n", path);
+	pw("Swapping backing to %s\n", path);
 
 	mutex_lock(&bt->lock);
 		bt->jiffies_when_added = jiffies;
@@ -347,7 +365,7 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 {
 	int err;
 
-	if (count > 0 && buf[0] == '\0') {
+	if (count <= 0 || buf[0] == '\0') {
 		bt_backing_release(dev_to_bt(dev), NULL);
 		return count;
 	}
