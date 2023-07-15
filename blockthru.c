@@ -60,8 +60,9 @@ struct bt_dev {
 
 	struct kretprobe add_probe, del_probe;
 
-	char *	path_pattern;
+	char *	persist_pattern;
 	int 	addtl_depth;
+	unsigned long persist_timeout;
 
 	uint swapped_count;
 	unsigned long jiffies_when_removed, jiffies_when_added;
@@ -294,6 +295,134 @@ static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
 	return 0;
 }
 
+#pragma region persist
+
+struct add_data {
+	struct gendisk * disk;
+	int old_flags;
+};
+
+static char * normalize_path(char * path) // allow paths retrieved from sysfs
+{
+    if (!strncmp(path, "/sys/", 5)) return path + 4;
+    if (path[0] == '.' && path[1] == '/') path += 1;
+    if (path[0] == '.' && path[1] == '.' && path[2] == '/') path += 2;
+    while (!strncmp(path, "/../", 4)) path += 3;
+
+    return path;
+}
+
+static int test_path(struct kobject * kobj, const char * pattern, int rewind)
+{
+	const char * part, * pp, * kp;
+
+	if (!kobj) return 1;
+	while (rewind--) if (!(kobj = kobj->parent)) { return 1; }
+
+	part = pattern + strlen(pattern); 
+	do {
+		part -= strlen(kobj->name) + 1;
+		if (part < pattern || *part != '/')
+			{ return 1; }
+
+		for (kp = kobj->name, pp = part+1; *kp; ++kp, ++pp)
+			if ((*kp != *pp) && (*pp != '?'))
+				{ return 1; }
+	} while ((kobj = kobj->parent));
+
+	return part != pattern;
+}
+
+/*
+int try_script(struct persist_c *pc) {
+	int ret;
+	char * envp[] = { "HOME=/", NULL };
+	char * argv[] = { "/bin/bash", pc->opts.script_on_added, pc->name, pc->blkdev->bd_disk->disk_name, NULL };
+
+	if (!pc->opts.script_on_added)
+		return 0;
+
+	pw("Calling user script %s\n", pc->opts.script_on_added);
+
+	ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
+	if (ret) 
+		pw("Script failed with error code %i\n", ret);
+
+	return ret;
+}
+*/
+
+static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct gendisk * disk = (void*)regs->ARG2;
+	struct add_data * d = (void*)ri->data;
+	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
+	struct kobject * parent;
+
+	d->disk = NULL;
+
+	if (!disk) {
+		pr_warn("add_disk: Disk argument is NULL!\n");
+		return 0;
+	}
+
+	// we must use parent because the block/sd* parts may not yet have been set
+    parent = &(((struct device *)(regs->ARG1))->kobj);
+
+	if (!parent) {
+		pw("add_disk: Disk [%s] has no parent device! Skipping\n", disk->disk_name);
+		return 0;
+	}
+
+	d->old_flags = disk->flags;
+
+	if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
+		pw("Disk [%s] is not on path: %s\n", disk->disk_name, bt->persist_pattern);
+	} else if (get_capacity(disk) != get_capacity(bt->disk)) {
+		pw("New disk [%s] capacity doesn't match! Skipping.\n", disk->disk_name);
+	} else {
+		pw("Matched new disk [%s]\n", disk->disk_name);
+		disk->flags |= (bt->disk->flags & GD_SUPPRESS_PART_SCAN);
+		d->disk = disk;
+
+		if ((d->old_flags ^ disk->flags) & GD_SUPPRESS_PART_SCAN)
+			pw("Suppressed partscan on disk %s\n", disk->disk_name);
+	}
+
+	return 0;
+}
+
+static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
+	struct add_data * d = (void*)ri->data;
+	unsigned long downtime = jiffies - bt->jiffies_when_removed;
+	struct block_device * bd;
+
+	if (!d->disk) return 0;
+
+	// todo: restore flags?
+
+	if (regs_return_value(regs))
+		return 0;
+
+	if (bt->backing) {
+		pw("New disk found before old one was deleted; Ignoring.\n");
+		return 0;
+	}
+
+	if (bt->persist_timeout && (bt->jiffies_when_removed + bt->persist_timeout < jiffies)) {
+		pw("Not loading new disk after timeout.\n");
+		return 0;
+	}
+
+	// try_script(pc);
+
+	// todo: swap in new disk here. how do we pass the disk to backing_swap?
+	
+	return 0;
+}
+
 static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct gendisk * disk = (struct gendisk *)regs->ARG1;
@@ -336,6 +465,53 @@ static void rip_probes(struct kretprobe * add_probe, struct kretprobe * del_prob
 	if (del_probe->handler) unregister_kretprobe(del_probe);
 }
 
+static int set_pattern(struct bt_dev * bt, char * pattern, size_t count)
+{
+	int ret = 0;
+	char * devpath, *kp, *kt, *pp;
+
+	if (count < 5) // normalize_path() minimum
+		return -EINVAL;
+
+	mutex_lock(&bt->lock);
+	if (bt->backing) {
+		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd_disk)->parent->kobj), GFP_KERNEL);
+		pattern = normalize_path(pattern);
+
+		for (kp = devpath, pp = pattern; *kp; ++kp, ++pp) {
+			if (*kp != *pp) {
+				if (*pp != '?' || *kp == '/') break;
+				*kp = '?'; // '?' is a wildcard
+			}
+		}
+
+		if (*pp || (*kp && *kp != '/')) { // this will exclude trailing '/' in pattern
+			pw("Device is not on path: [%.*s]%s != %s\n", (int)(kp - devpath), devpath, kp, pp);
+			ret = -EINVAL;
+			kfree(devpath);
+		} else {
+			kt = kp;
+			while (*kp) if (*kp++ == '/') bt->addtl_depth++;
+			*kt = '\0';
+
+			if (bt->persist_pattern) kfree(bt->persist_pattern);
+			if (!bt->add_probe.handler) {
+				ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));
+				if (ret) kfree(devpath);
+			} else
+				bt->persist_pattern = devpath;
+		}
+	} else {
+		pw("Can't update persistence pattern when no backing device is set\n");
+		ret = -ENODEV;
+	}
+	mutex_unlock(&bt->lock);
+
+	return ret;
+}
+
+#pragma endregion persist
+
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return sysfs_emit(buf, "%s\n",dev_to_bt(dev)->suspend ? "1" : "0");
@@ -375,16 +551,30 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RW(backing);
 
-static ssize_t port_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t persist_pattern_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return 0;
+	return sysfs_emit(buf, "%s\n", dev_to_bt(dev)->persist_pattern);
 }
 
-static ssize_t port_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t persist_pattern_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-    return count;
+	struct bt_dev * bt = dev_to_bt(dev);
+	ssize_t ret;
+
+	if (count <= 0) {
+		mutex_lock(&bt->lock);
+			if (bt->persist_pattern) {
+				kfree(bt->persist_pattern);
+				if (bt->add_probe.handler) unregister_kretprobe(&bt->add_probe);
+			}
+		mutex_unlock(&bt->lock);
+		return count;
+	} else {
+		ret = set_pattern(bt, buf, count);
+		return ret < 0 ? ret : count;
+	}
 }
-static DEVICE_ATTR_RW(port);
+static DEVICE_ATTR_RW(persist_pattern);
 
 static ssize_t tries_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -438,7 +628,7 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
 	&dev_attr_backing.attr,
 	&dev_attr_suspend.attr,
-	&dev_attr_port.attr,
+	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
 	&dev_attr_wait_for_backing.attr,
 	NULL,
@@ -586,6 +776,8 @@ static int bt_del(struct bt_dev *bt)
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);
+
+	if (bt->persist_pattern) kfree(bt->persist_pattern);
 	
 	return 0;
 }
