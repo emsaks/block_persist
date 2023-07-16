@@ -45,7 +45,7 @@ struct bt_dev {
 
 	struct block_device * backing;
 	char backing_path[PATH_MAX];
-	bool wait_for_backing;
+	bool await_backing;
 
 	int exiting;
 	struct completion exit;
@@ -136,7 +136,7 @@ static void bt_submit_internal(struct bio * bio)
 
 retry:	
 	mutex_lock(&bt->lock);
-	suspend = bt->suspend || (bt->wait_for_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
+	suspend = bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
 	if (!suspend && bt->backing != NULL)
 		stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
 	else stash->backing = NULL;
@@ -596,23 +596,23 @@ static ssize_t tries_store(struct device *dev, struct device_attribute *attr, co
 }
 static DEVICE_ATTR_RW(tries);
 
-static ssize_t wait_for_backing_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t await_backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return sysfs_emit(buf, "%i", dev_to_bt(dev)->tries);
 }
 
-static ssize_t wait_for_backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t await_backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct bt_dev * bt = dev_to_bt(dev);
 	if (count > 0) {
-		if (buf[0] == '1') bt->wait_for_backing = 1;
-		else if (buf[0] == '0') bt->wait_for_backing = 0;
+		if (buf[0] == '1') bt->await_backing = 1;
+		else if (buf[0] == '0') bt->await_backing = 0;
 		else return -EINVAL;
 	}
 
     return count;
 }
-static DEVICE_ATTR_RW(wait_for_backing);
+static DEVICE_ATTR_RW(await_backing);
 
 void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -630,7 +630,7 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_suspend.attr,
 	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
-	&dev_attr_wait_for_backing.attr,
+	&dev_attr_await_backing.attr,
 	NULL,
 };
 
@@ -684,7 +684,7 @@ static int bt_alloc(const char * name)
 	INIT_LIST_HEAD(&bt->free);
 
 	bt->tries = 1;
-	bt->wait_for_backing = 1;
+	bt->await_backing = 1;
 
 	// todo: check name available
 	snprintf(buf, DISK_NAME_LEN, name);
