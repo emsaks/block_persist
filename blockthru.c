@@ -44,7 +44,6 @@ struct bt_dev {
 	struct completion resume;
 
 	struct block_device * backing;
-	char backing_path[PATH_MAX];
 	bool await_backing;
 
 	int exiting;
@@ -125,10 +124,15 @@ static void bt_put_stash(struct bio_stash * stash)
 	if (exit) complete(&bt->exit);
 }
 
+int should_block(struct bt_dev * bt) 
+{
+	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
+}
+
 // assume bio is already pointing to *our* endio and has stash in bi_private
 static void bt_submit_internal(struct bio * bio)
 {
-	int suspend;
+	int block;
 	struct bio_stash * stash = (struct bio_stash *)bio->bi_private;
 	struct bt_dev * bt = stash->bt;
 
@@ -136,13 +140,13 @@ static void bt_submit_internal(struct bio * bio)
 
 retry:	
 	mutex_lock(&bt->lock);
-	suspend = bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
-	if (!suspend && bt->backing != NULL)
-		stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
-	else stash->backing = NULL;
+	if (block = should_block(bt)) {
+		reinit_completion(&bt->resume);
+		stash->backing = NULL; // todo: is this necessary? is the sumitted stash ever not NULL?
+	} else stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
 	mutex_unlock(&bt->lock);
 
-	if (suspend) {
+	if (block) {
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
 		goto retry;
 	} else if (stash->backing == NULL) {
@@ -204,28 +208,22 @@ static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 	struct block_device * bd;
 
 	int err = 0;
-	mutex_lock(&bt->lock);
-		if (bt->exiting)
-			err = -EBUSY;
-		else {
-			reinit_completion(&bt->resume);
-			bt->suspend = 1;
-			bd = bt->backing;
-		}
-	mutex_unlock(&bt->lock);
-	
+	if (bt->exiting)
+		err = -EBUSY;
+	else {
+		bt->suspend = 1;
+		bd = bt->backing;
+	}
 
 	return err;
 }
 
-static int bt_resume(struct bt_dev * bt)
+static void bt_resume(struct bt_dev * bt)
 {
 	mutex_lock(&bt->lock);
 		bt->suspend = 0;
-		complete_all(&bt->resume);
+		if (!should_block(bt)) complete_all(&bt->resume);
 	mutex_unlock(&bt->lock);
-	
-	return 0;
 }
 
 /**
@@ -245,24 +243,51 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 	mutex_lock(&bt->lock);
 	if (!disk || bt->backing->bd_disk == disk) {
 		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
-				bt->backing_path,
+				bt->backing->bd_disk->disk_name,
 				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 		bt->jiffies_when_removed = jiffies;
-		putdev = bt_put_dev(bt, bt->backing);
+		if (putdev = bt_put_dev(bt, bt->backing))
+			 blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
 		bt->backing = NULL;
-		reinit_completion(&bt->resume); // so block_on_no_backing will have what to wait on
 	}
 	mutex_unlock(&bt->lock); 
-	if (putdev) blkdev_put(putdev, FMODE_READ);
 }
 
+static int test_path(struct kobject * kobj, const char * pattern, int rewind);
 
+static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
+{
+	struct block_device *putdev;
+	unsigned long uptime;
+	char * temp;
 
-static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
+	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
+
+	mutex_lock(&bt->lock);
+		if (bt->backing) {
+			uptime = jiffies - bt->jiffies_when_added;
+			pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+				bt->backing->bd_disk->disk_name,
+				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+			if (putdev = bt_put_dev(bt, bt->backing))
+				blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
+		}
+	
+		bt->backing = bd;
+		bt->jiffies_when_added = jiffies;
+		if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
+			kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
+		if (!should_block(bt)) complete_all(&bt->resume);
+	mutex_unlock(&bt->lock);
+
+	return 0;
+}
+
+static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
 	struct block_device * bd, *putdev;
-	int resume = 0;
 	unsigned long uptime;
+	char * temp;
 
 	bd = blkdev_get_by_path(path, FMODE_READ, holder);
 	if (IS_ERR(bd))
@@ -270,29 +295,25 @@ static int bt_backing_swap(struct bt_dev *bt, const char * path, size_t count)
 	if (!bd)
 		return -ENODEV;
 
-	if (bt->backing) {
-		uptime = jiffies - bt->jiffies_when_added;
-		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
-			bt->backing_path,
-			uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+	// todo: this must be done outside the lock, because the probe may be waiting on the lock
+	// but it seems there's a race here.
+	// an explicit set should take precedence to the retprobe, so
+	// we should unregister outside lock (assumes unregister waits for all handlers to finish)
+	// then clear pattern in lock?
+	if (bt->persist_pattern) {
+		if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
+			pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
+			if (bt->add_probe.handler) {
+				unregister_kretprobe(&bt->add_probe);
+				bt->add_probe.handler = NULL;
+			}
+			temp = bt->persist_pattern;
+			bt->persist_pattern = NULL;
+			kfree(temp);
+		}
 	}
 
-	pw("Swapping backing to %s\n", path);
-
-	mutex_lock(&bt->lock);
-		bt->jiffies_when_added = jiffies;
-		putdev = bt_put_dev(bt, bt->backing);
-		bt->backing = bd;
-		strncpy((char*)bt->backing_path, path, count);
-		resume = !bt->suspend; // in case we previously had a dead backing and block_on_no_backing was set
-		if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
-			kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
-	mutex_unlock(&bt->lock);
-
-	if (resume) complete_all(&bt->resume);
-	if (putdev) blkdev_put(putdev, FMODE_READ);
-
-	return 0;
+	return bt_backing_swap(bt, bd);
 }
 
 #pragma region persist
@@ -302,7 +323,7 @@ struct add_data {
 	int old_flags;
 };
 
-static char * normalize_path(char * path) // allow paths retrieved from sysfs
+static const char * normalize_path(const char * path) // allow paths retrieved from sysfs
 {
     if (!strncmp(path, "/sys/", 5)) return path + 4;
     if (path[0] == '.' && path[1] == '/') path += 1;
@@ -377,9 +398,9 @@ static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	d->old_flags = disk->flags;
 
 	if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
-		pw("Disk [%s] is not on path: %s\n", disk->disk_name, bt->persist_pattern);
+		pw("Added disk [%s] is not on path: %s. Ignoring.\n", disk->disk_name, bt->persist_pattern);
 	} else if (get_capacity(disk) != get_capacity(bt->disk)) {
-		pw("New disk [%s] capacity doesn't match! Skipping.\n", disk->disk_name);
+		pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
 	} else {
 		pw("Matched new disk [%s]\n", disk->disk_name);
 		disk->flags |= (bt->disk->flags & GD_SUPPRESS_PART_SCAN);
@@ -396,8 +417,6 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
 	struct add_data * d = (void*)ri->data;
-	unsigned long downtime = jiffies - bt->jiffies_when_removed;
-	struct block_device * bd;
 
 	if (!d->disk) return 0;
 
@@ -418,7 +437,7 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// try_script(pc);
 
-	// todo: swap in new disk here. how do we pass the disk to backing_swap?
+	// todo: swap in new disk here. how do we pass the disk to backing_swap? and avoid checking path?
 	
 	return 0;
 }
@@ -465,10 +484,11 @@ static void rip_probes(struct kretprobe * add_probe, struct kretprobe * del_prob
 	if (del_probe->handler) unregister_kretprobe(del_probe);
 }
 
-static int set_pattern(struct bt_dev * bt, char * pattern, size_t count)
+static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 {
 	int ret = 0;
-	char * devpath, *kp, *kt, *pp;
+	char * devpath, *kp, *kt;
+	const char *pp;
 
 	if (count < 5) // normalize_path() minimum
 		return -EINVAL;
@@ -519,13 +539,13 @@ static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, c
 
 static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	int err;
+	int err = 0;
 	if (count <= 0)
 		return count;
 	if (buf[0] == '1') {
-		err = bt_suspend(dev_to_bt(dev));
+		err = bt_suspend(dev_to_bt(dev), 0);
 	} else if (buf[0] == '0') {
-		err = bt_resume(dev_to_bt(dev));
+		bt_resume(dev_to_bt(dev));
 	}
 	return err < 0 ? err : count;
 }
@@ -533,8 +553,13 @@ static DEVICE_ATTR_RW(suspend);
 
 static ssize_t backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	strncpy(buf, dev_to_bt(dev)->backing_path, sizeof(dev_to_bt(dev)->backing_path));
-	return strlen(buf);
+	struct bt_dev * bt = dev_to_bt(dev);
+	struct block_device *bd = bt->backing;
+	if (bd) {
+		strcpy(buf, bd->bd_disk->disk_name);
+		return strlen(buf);
+	} else
+		return 0;
 }
 
 static ssize_t backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -546,7 +571,7 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 		return count;
 	}
 
-    err = bt_backing_swap(dev_to_bt(dev), buf, count);
+    err = bt_backing_swap_path(dev_to_bt(dev), buf, count);
 	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(backing);
@@ -565,7 +590,11 @@ static ssize_t persist_pattern_store(struct device *dev, struct device_attribute
 		mutex_lock(&bt->lock);
 			if (bt->persist_pattern) {
 				kfree(bt->persist_pattern);
-				if (bt->add_probe.handler) unregister_kretprobe(&bt->add_probe);
+				bt->persist_pattern = NULL;
+				if (bt->add_probe.handler) {
+					unregister_kretprobe(&bt->add_probe);
+					bt->add_probe.handler = NULL;
+				}
 			}
 		mutex_unlock(&bt->lock);
 		return count;
@@ -606,8 +635,12 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 	struct bt_dev * bt = dev_to_bt(dev);
 	if (count > 0) {
 		if (buf[0] == '1') bt->await_backing = 1;
-		else if (buf[0] == '0') bt->await_backing = 0;
-		else return -EINVAL;
+		else if (buf[0] == '0') {
+			mutex_lock(&bt->lock);
+				bt->await_backing = 0;
+				if (!should_block(bt)) complete_all(&bt->resume);
+			mutex_unlock(&bt->lock);
+		} else return -EINVAL;
 	}
 
     return count;
