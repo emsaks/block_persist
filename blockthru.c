@@ -140,7 +140,7 @@ static void bt_submit_internal(struct bio * bio)
 
 retry:	
 	mutex_lock(&bt->lock);
-	if (block = should_block(bt)) {
+	if ((block = should_block(bt))) {
 		reinit_completion(&bt->resume);
 		stash->backing = NULL; // todo: is this necessary? is the sumitted stash ever not NULL?
 	} else stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
@@ -246,7 +246,7 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 				bt->backing->bd_disk->disk_name,
 				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 		bt->jiffies_when_removed = jiffies;
-		if (putdev = bt_put_dev(bt, bt->backing))
+		if ((putdev = bt_put_dev(bt, bt->backing)))
 			 blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
 		bt->backing = NULL;
 	}
@@ -255,39 +255,32 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 
 static int test_path(struct kobject * kobj, const char * pattern, int rewind);
 
-static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
+// TAKE LOCK BEFORE!
+static void bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 {
 	struct block_device *putdev;
 	unsigned long uptime;
-	char * temp;
 
 	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
 
-	mutex_lock(&bt->lock);
-		if (bt->backing) {
-			uptime = jiffies - bt->jiffies_when_added;
-			pw("Releasing disk [%s]; Uptime: %lum%lus\n",
-				bt->backing->bd_disk->disk_name,
-				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
-			if (putdev = bt_put_dev(bt, bt->backing))
-				blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
-		}
-	
-		bt->backing = bd;
-		bt->jiffies_when_added = jiffies;
-		if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
-			kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
-		if (!should_block(bt)) complete_all(&bt->resume);
-	mutex_unlock(&bt->lock);
-
-	return 0;
+	if (bt->backing) {
+		uptime = jiffies - bt->jiffies_when_added;
+		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+			bt->backing->bd_disk->disk_name,
+			uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+		if (((putdev = bt_put_dev(bt, bt->backing))))
+			blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
+	}
+	bt->backing = bd;
+	bt->jiffies_when_added = jiffies;
+	if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
+		kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
+	if (!should_block(bt)) complete_all(&bt->resume);
 }
 
 static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
-	struct block_device * bd, *putdev;
-	unsigned long uptime;
-	char * temp;
+	struct block_device * bd;
 
 	bd = blkdev_get_by_path(path, FMODE_READ, holder);
 	if (IS_ERR(bd))
@@ -295,25 +288,22 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 	if (!bd)
 		return -ENODEV;
 
-	// todo: this must be done outside the lock, because the probe may be waiting on the lock
-	// but it seems there's a race here.
-	// an explicit set should take precedence to the retprobe, so
-	// we should unregister outside lock (assumes unregister waits for all handlers to finish)
-	// then clear pattern in lock?
-	if (bt->persist_pattern) {
-		if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
-			pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
-			if (bt->add_probe.handler) {
-				unregister_kretprobe(&bt->add_probe);
-				bt->add_probe.handler = NULL;
+	mutex_lock(&bt->lock);
+		if (bt->persist_pattern) {
+			if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
+				pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
+				if (bt->add_probe.handler) {
+					unregister_kretprobe(&bt->add_probe);
+					bt->add_probe.handler = NULL;
+				}
+				kfree(bt->persist_pattern);
+				bt->persist_pattern = NULL;
 			}
-			temp = bt->persist_pattern;
-			bt->persist_pattern = NULL;
-			kfree(temp);
 		}
-	}
+		bt_backing_swap(bt, bd);
+	mutex_lock(&bt->lock);
 
-	return bt_backing_swap(bt, bd);
+	return 0;
 }
 
 #pragma region persist
@@ -397,17 +387,28 @@ static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	d->old_flags = disk->flags;
 
-	if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
-		pw("Added disk [%s] is not on path: %s. Ignoring.\n", disk->disk_name, bt->persist_pattern);
-	} else if (get_capacity(disk) != get_capacity(bt->disk)) {
-		pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
-	} else {
-		pw("Matched new disk [%s]\n", disk->disk_name);
-		disk->flags |= (bt->disk->flags & GD_SUPPRESS_PART_SCAN);
-		d->disk = disk;
+	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
+retry:
+	if(!mutex_trylock(&bt->lock)) {
+		if (!bt->persist_pattern) // may be in process of wiping pattern
+			return 0;
 
-		if ((d->old_flags ^ disk->flags) & GD_SUPPRESS_PART_SCAN)
-			pw("Suppressed partscan on disk %s\n", disk->disk_name);
+		if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
+			pw("Added disk [%s] is not on path: %s. Ignoring.\n", disk->disk_name, bt->persist_pattern);
+		} else if (get_capacity(disk) != get_capacity(bt->disk)) {
+			pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
+		} else {
+			pw("Matched new disk [%s]\n", disk->disk_name);
+			disk->flags |= (bt->disk->flags & GD_SUPPRESS_PART_SCAN);
+			d->disk = disk;
+
+			if ((d->old_flags ^ disk->flags) & GD_SUPPRESS_PART_SCAN)
+				pw("Suppressed partscan on disk %s\n", disk->disk_name);
+		}
+	} else {
+		if (bt->persist_pattern)
+			goto retry;
+	 	pw("Ignoring new disk after persistence pattern has been cleared.\n");
 	}
 
 	return 0;
@@ -437,7 +438,21 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// try_script(pc);
 
-	// todo: swap in new disk here. how do we pass the disk to backing_swap? and avoid checking path?
+	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
+retry:
+	if(!mutex_trylock(&bt->lock)) {
+		// pattern may have been switched beneath us
+		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
+			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
+		} else {
+			bt_backing_swap(bt, d->disk->part0);
+		}
+		mutex_unlock(&bt->lock);
+	} else {
+		if (bt->persist_pattern)
+			goto retry;
+		pw("Not swapping disk after persistence pattern has been cleared.\n");
+	}
 	
 	return 0;
 }
@@ -576,6 +591,26 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RW(backing);
 
+static ssize_t persist_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%li", dev_to_bt(dev)->persist_timeout);
+}
+
+static ssize_t persist_timeout_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int err;
+	unsigned long v;
+
+	err = kstrtoul(buf, 10, &v);
+	if (err || v > UINT_MAX)
+		return -EINVAL;
+
+	dev_to_bt(dev)->persist_timeout = v;
+
+    return count;
+}
+static DEVICE_ATTR_RW(persist_timeout);
+
 static ssize_t persist_pattern_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return sysfs_emit(buf, "%s\n", dev_to_bt(dev)->persist_pattern);
@@ -661,6 +696,7 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
 	&dev_attr_backing.attr,
 	&dev_attr_suspend.attr,
+	&dev_attr_persist_timeout.attr,
 	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
 	&dev_attr_await_backing.attr,
