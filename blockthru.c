@@ -315,12 +315,12 @@ struct add_data {
 
 static const char * normalize_path(const char * path) // allow paths retrieved from sysfs
 {
-    if (!strncmp(path, "/sys/", 5)) return path + 4;
-    if (path[0] == '.' && path[1] == '/') path += 1;
-    if (path[0] == '.' && path[1] == '.' && path[2] == '/') path += 2;
-    while (!strncmp(path, "/../", 4)) path += 3;
+	if (!strncmp(path, "/sys/", 5)) return path + 4;
+	if (path[0] == '.' && path[1] == '/') path += 1;
+	if (path[0] == '.' && path[1] == '.' && path[2] == '/') path += 2;
+	while (!strncmp(path, "/../", 4)) path += 3;
 
-    return path;
+	return path;
 }
 
 static int test_path(struct kobject * kobj, const char * pattern, int rewind)
@@ -478,17 +478,17 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 
 	memset(probe, 0, sizeof(*probe));
 	probe->handler        = ret,
-    probe->entry_handler  = entry,
-    probe->maxactive      = 20,
+	probe->entry_handler  = entry,
+	probe->maxactive      = 20,
 	probe->data_size	  = data_size;
 	probe->kp.symbol_name = symbol_name;
 
 	e = register_kretprobe(probe);
-    if (e < 0) {
-        pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
+	if (e < 0) {
+		pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
 		probe->handler = NULL; // this will flag that the probe has not been set
-        return e;
-    }
+		return e;
+	}
 
 	return 0;
 }
@@ -586,7 +586,7 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 		return count;
 	}
 
-    err = bt_backing_swap_path(dev_to_bt(dev), buf, count);
+	err = bt_backing_swap_path(dev_to_bt(dev), buf, count);
 	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(backing);
@@ -607,7 +607,7 @@ static ssize_t persist_timeout_store(struct device *dev, struct device_attribute
 
 	dev_to_bt(dev)->persist_timeout = v;
 
-    return count;
+	return count;
 }
 static DEVICE_ATTR_RW(persist_timeout);
 
@@ -656,7 +656,7 @@ static ssize_t tries_store(struct device *dev, struct device_attribute *attr, co
 
 	dev_to_bt(dev)->tries = v;
 
-    return count;
+	return count;
 }
 static DEVICE_ATTR_RW(tries);
 
@@ -678,7 +678,7 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 		} else return -EINVAL;
 	}
 
-    return count;
+	return count;
 }
 static DEVICE_ATTR_RW(await_backing);
 
@@ -688,7 +688,7 @@ static ssize_t delete_store(struct device *dev, struct device_attribute *attr, c
 	struct bt_dev * bt = dev_to_bt(dev);
 	INIT_WORK(&bt->delete, bt_remove_worker);
 	schedule_work(&bt->delete);
-    return count;
+	return count;
 }
 static DEVICE_ATTR_WO(delete);
 
@@ -704,8 +704,8 @@ static struct attribute *bt_attrs[] = {
 };
 
 static struct attribute_group bt_attribute_group = {
-	.name = "blockthru",
-	.attrs= bt_attrs,
+	.name	= "blockthru",
+	.attrs	= bt_attrs,
 };
 
 
@@ -730,8 +730,8 @@ static void bt_submit_bio(struct bio *bio)
 }
 
 static const struct block_device_operations bt_fops = {
-	.owner      =	THIS_MODULE,
-	.submit_bio =	bt_submit_bio,
+	.owner		=	THIS_MODULE,
+	.submit_bio	=	bt_submit_bio,
 };
 
 static int bt_alloc(const char * name)
@@ -896,18 +896,18 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 }
 
 struct kernel_param_ops delete_ops = { 
-    .set = delete_set,
+	.set = delete_set,
 };
 module_param_cb(delete, &delete_ops, NULL, 0664);
 MODULE_PARM_DESC(delete, "Delete named passthru device");
 
 static int create_set(const char *val, const struct kernel_param *kp)
 {
-    return bt_alloc(val);
+	return bt_alloc(val);
 }
 
 struct kernel_param_ops create_ops = { 
-    .set = create_set,
+	.set = create_set,
 };
 module_param_cb(create, &create_ops, NULL, 0664);
 MODULE_PARM_DESC(create, "Create new named passthru device");
@@ -920,8 +920,8 @@ static void bt_cleanup(void)
 static int __init bt_init(void)
 {
 	bt_major = register_blkdev(0, "bt"BT_VER);
-    if (bt_major < 0) {
-        pr_info("blockthru"BT_VER": module NOT loaded !\n");
+	if (bt_major < 0) {
+		pr_info("blockthru"BT_VER": module NOT loaded !\n");
 		return -EIO;
 	}
 
