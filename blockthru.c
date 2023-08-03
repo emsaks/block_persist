@@ -15,9 +15,15 @@
 
 #include "regs.h"
 
-#define BT_VER "6"
+#define BT_VER "10"
 
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
+
+/*
+#define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
+#define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
+#define spin_trylock(mut) (pr_warn("Pre trylock in %i\n", __LINE__), spin_trylock(mut))
+*/
 
 static int bt_major;
 static int bt_minors = 0;
@@ -37,7 +43,8 @@ struct bio_stash {
 struct bt_dev {
 	struct list_head entry;
 
-	struct mutex lock;
+	//struct mutex lock;
+	spinlock_t lock;
 	struct gendisk * disk;
 
 	int suspend;
@@ -68,7 +75,7 @@ struct bt_dev {
 };
 
 // ll of devices
-DEFINE_MUTEX(bt_lock);
+DEFINE_SPINLOCK(bt_lock);
 static LIST_HEAD(bt_devs);
 
 #define dev_to_bt(dev) ((struct bt_dev *)dev_to_disk(dev)->private_data)
@@ -76,7 +83,7 @@ static LIST_HEAD(bt_devs);
 static struct bio_stash * bt_get_stash(struct bt_dev * bt)
 {
 	struct bio_stash * stash = NULL;
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 		stash = list_first_entry_or_null(&bt->free, struct bio_stash, entry);
 		if (stash) {
 			list_move(&stash->entry, &bt->inflight);
@@ -86,7 +93,7 @@ static struct bio_stash * bt_get_stash(struct bt_dev * bt)
 			stash->bt = bt;
 			list_add(&stash->entry, &bt->inflight);
 		}
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 
 	return stash;
 }
@@ -112,13 +119,13 @@ static void bt_put_stash(struct bio_stash * stash)
 	struct block_device *putdev = NULL;
 	int exit = 0;
 
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 	list_move(&stash->entry, &bt->free); // we can safely call bt_put_dev now
 	if (bt->backing != stash->backing)
 		putdev = bt_put_dev(bt, stash->backing);
 	stash->backing = NULL;
 	exit = bt->exiting && list_empty(&bt->inflight);
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 	
 	if (putdev) blkdev_put(putdev, FMODE_READ);
 	if (exit) complete(&bt->exit);
@@ -139,12 +146,12 @@ static void bt_submit_internal(struct bio * bio)
 	--stash->tries_remaining;
 
 retry:	
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 	if ((block = should_block(bt))) {
 		reinit_completion(&bt->resume);
 		stash->backing = NULL; // todo: is this necessary? is the sumitted stash ever not NULL?
 	} else stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 
 	if (block) {
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
@@ -171,11 +178,11 @@ static void bt_io_end(struct bio * bio)
 			bio->bi_status = BLK_STS_OK;
 			putdev = stash->backing;
 			// put the device ourself (because we are not calling put_stash)
-			mutex_lock(&stash->bt->lock);
+			spin_lock(&stash->bt->lock);
 			stash->backing = NULL; // so bt_put_dev will work properly
 			if (stash->bt->backing != putdev)
 				putdev = bt_put_dev(stash->bt, putdev);
-			mutex_unlock(&stash->bt->lock);
+			spin_unlock(&stash->bt->lock);
 			if (putdev) blkdev_put(putdev, FMODE_READ);
 
 			bt_submit_internal(bio);
@@ -196,9 +203,9 @@ static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
 {
 	int flushed;
 
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 	flushed = bt_put_dev(bt , bd) || !bt->suspend;
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 	
 	return flushed;
 }
@@ -220,10 +227,10 @@ static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 
 static void bt_resume(struct bt_dev * bt)
 {
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 		bt->suspend = 0;
 		if (!should_block(bt)) complete_all(&bt->resume);
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 }
 
 /**
@@ -240,7 +247,7 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 	if (!bt->backing)
 		return;
 
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 	if (!disk || bt->backing->bd_disk == disk) {
 		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
 				bt->backing->bd_disk->disk_name,
@@ -250,7 +257,7 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
 			 blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
 		bt->backing = NULL;
 	}
-	mutex_unlock(&bt->lock); 
+	spin_unlock(&bt->lock); 
 }
 
 static int test_path(struct kobject * kobj, const char * pattern, int rewind);
@@ -260,6 +267,11 @@ static void bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 {
 	struct block_device *putdev;
 	unsigned long uptime;
+
+	if (bt->backing == bd) {
+		pw("Ignoring swap request. Already in use.\n");
+		return;
+	}
 
 	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
 
@@ -288,7 +300,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 	if (!bd)
 		return -ENODEV;
 
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 		if (bt->persist_pattern) {
 			if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 				pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
@@ -301,7 +313,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 			}
 		}
 		bt_backing_swap(bt, bd);
-	mutex_lock(&bt->lock);
+	spin_unlock(&bt->lock);
 
 	return 0;
 }
@@ -389,7 +401,7 @@ static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
 retry:
-	if(!mutex_trylock(&bt->lock)) {
+	if(spin_trylock(&bt->lock)) {
 		if (!bt->persist_pattern) // may be in process of wiping pattern
 			return 0;
 
@@ -440,14 +452,14 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
 retry:
-	if(!mutex_trylock(&bt->lock)) {
+	if(spin_trylock(&bt->lock)) {
 		// pattern may have been switched beneath us
 		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
 		} else {
 			bt_backing_swap(bt, d->disk->part0);
 		}
-		mutex_unlock(&bt->lock);
+		spin_unlock(&bt->lock);
 	} else {
 		if (bt->persist_pattern)
 			goto retry;
@@ -508,7 +520,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 	if (count < 5) // normalize_path() minimum
 		return -EINVAL;
 
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 	if (bt->backing) {
 		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd_disk)->parent->kobj), GFP_KERNEL);
 		pattern = normalize_path(pattern);
@@ -540,7 +552,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 		pw("Can't update persistence pattern when no backing device is set\n");
 		ret = -ENODEV;
 	}
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 
 	return ret;
 }
@@ -622,7 +634,7 @@ static ssize_t persist_pattern_store(struct device *dev, struct device_attribute
 	ssize_t ret;
 
 	if (count <= 0) {
-		mutex_lock(&bt->lock);
+		spin_lock(&bt->lock);
 			if (bt->persist_pattern) {
 				kfree(bt->persist_pattern);
 				bt->persist_pattern = NULL;
@@ -631,7 +643,7 @@ static ssize_t persist_pattern_store(struct device *dev, struct device_attribute
 					bt->add_probe.handler = NULL;
 				}
 			}
-		mutex_unlock(&bt->lock);
+		spin_unlock(&bt->lock);
 		return count;
 	} else {
 		ret = set_pattern(bt, buf, count);
@@ -671,10 +683,10 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 	if (count > 0) {
 		if (buf[0] == '1') bt->await_backing = 1;
 		else if (buf[0] == '0') {
-			mutex_lock(&bt->lock);
+			spin_lock(&bt->lock);
 				bt->await_backing = 0;
 				if (!should_block(bt)) complete_all(&bt->resume);
-			mutex_unlock(&bt->lock);
+			spin_unlock(&bt->lock);
 		} else return -EINVAL;
 	}
 
@@ -745,7 +757,8 @@ static int bt_alloc(const char * name)
 	if (!bt)
 		return -ENOMEM;
 	
-	mutex_init(&bt->lock);
+	//mutex_init(&bt->lock);
+	spin_lock_init(&bt->lock);
 	init_completion(&bt->resume);
 	init_completion(&bt->exit);
 
@@ -797,9 +810,9 @@ static int bt_alloc(const char * name)
 	if(!try_module_get(THIS_MODULE))
 		goto out_del_disk;
 
-	mutex_lock(&bt_lock);
+	spin_lock(&bt_lock);
 		list_add(&bt->entry, &bt_devs);
-	mutex_unlock(&bt_lock);
+	spin_unlock(&bt_lock);
 
 	return 0;
 
@@ -819,29 +832,30 @@ static int bt_del(struct bt_dev *bt)
 	struct bio_stash * stash, * n;
 	int has_inflight = 0;
 	int already_exiting = 0;
-	mutex_lock(&bt->lock);
+
+	spin_lock(&bt->lock);
 	if (bt->exiting)
 		already_exiting = 1;
 	else if (!bt->suspend)
 		bt->exiting = 1;
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 	if (!bt->exiting || already_exiting)
 		return -EBUSY;
 	
 	rip_probes(&bt->add_probe, &bt->del_probe);
+	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	del_gendisk(bt->disk);
-	put_disk(bt->disk);
 	
-	mutex_lock(&bt->lock);
+	spin_lock(&bt->lock);
 		has_inflight = !list_empty(&bt->inflight);
-	mutex_unlock(&bt->lock);
+	spin_unlock(&bt->lock);
 	if (has_inflight)
 		wait_for_completion(&bt->exit);
 	
 	if (bt->backing) blkdev_put(bt->backing, FMODE_READ);
 
-	blk_cleanup_disk(bt->disk);
+	blk_cleanup_disk(bt->disk); // newer kernels just use put_disk
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);
@@ -863,9 +877,9 @@ static int bt_remove(struct bt_dev *bt)
 	if (err) 
 		return err;
 
-	mutex_lock(&bt_lock);
+	spin_lock(&bt_lock);
 		list_del(&bt->entry);
-	mutex_unlock(&bt_lock);
+	spin_unlock(&bt_lock);
 
 	bt_put(bt);
 	return 0;
@@ -882,12 +896,12 @@ void bt_remove_worker(struct work_struct *work)
 static int delete_set(const char *val, const struct kernel_param *kp)
 {
 	struct bt_dev * bt, * n;
-	mutex_lock(&bt_lock);
+	spin_lock(&bt_lock);
 	list_for_each_entry_safe(bt, n, &bt_devs, entry) {
 		if (!strncmp(val, bt->disk->disk_name, sizeof(bt->disk->disk_name)))
 			break;
 	}
-	mutex_unlock(&bt_lock);
+	spin_unlock(&bt_lock);
 
 	if list_entry_is_head(bt, &bt_devs, entry)
 		return -ENODEV;

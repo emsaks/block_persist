@@ -6,6 +6,8 @@
         "part_stat.h": "c",
         "semaphore.h": "c",
         "moduleparam.h": "c",
-        "init.h": "c"
+        "init.h": "c",
+        "module.h": "c",
+        "completion.h": "c"
     }
 }
