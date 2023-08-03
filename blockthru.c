@@ -15,10 +15,11 @@
 
 #include "regs.h"
 
-#define BT_VER "10"
+#define BT_VER "12"
 
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
 
+#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
 /*
 #define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
 #define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
@@ -31,10 +32,16 @@ static char * holder = "blockthru"BT_VER "held disk.";
 
 struct bt_dev;
 
+struct disk {
+	struct bt_dev * bt;
+	struct block_device * bd;
+	struct kref inflight;
+	unsigned long jiffies_when_added;
+};
+
 struct bio_stash {
 	struct list_head entry;
-	struct bt_dev * bt;
-	struct block_device * backing;
+	struct disk * disk;
 	void * bi_private;
 	bio_end_io_t * bi_end_io;
 	int tries_remaining;
@@ -50,7 +57,7 @@ struct bt_dev {
 	int suspend;
 	struct completion resume;
 
-	struct block_device * backing;
+	struct disk * backing;
 	bool await_backing;
 
 	int exiting;
@@ -62,7 +69,6 @@ struct bt_dev {
 
 	int tries;
 	struct list_head free;
-	struct list_head inflight;
 
 	struct kretprobe add_probe, del_probe;
 
@@ -71,7 +77,9 @@ struct bt_dev {
 	unsigned long persist_timeout;
 
 	uint swapped_count;
-	unsigned long jiffies_when_removed, jiffies_when_added;
+	unsigned long jiffies_when_removed;
+
+	struct kref refcount;
 };
 
 // ll of devices
@@ -80,68 +88,79 @@ static LIST_HEAD(bt_devs);
 
 #define dev_to_bt(dev) ((struct bt_dev *)dev_to_disk(dev)->private_data)
 
-static struct bio_stash * bt_get_stash(struct bt_dev * bt)
+void release_dev(struct kref *ref)
+{
+	struct bt_dev * bt = container_of(ref, struct bt_dev, refcount);
+	complete(&bt->exit);
+}
+
+struct disk * get_backing(struct bt_dev * bt)
+{
+	struct disk * disk = kzalloc(sizeof(struct disk), GFP_KERNEL);
+
+	if (!disk)
+		return NULL;
+	
+	kref_init(&disk->inflight);
+	disk->bt = bt;
+	disk->jiffies_when_added = jiffies;
+	kref_get(&bt->refcount);
+
+	return disk;
+}
+
+void put_backing(struct kref *ref)
+{
+    struct disk *disk = container_of(ref, struct disk, inflight);
+	struct bt_dev * bt = disk->bt;
+	unsigned long uptime = jiffies - disk->jiffies_when_added;
+
+	blkdev_put(disk->bd, FMODE_READ);
+
+	pw("Putting disk [%s]; Uptime: %lum%lus\n",
+				disk->bd->bd_disk->disk_name,
+				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+
+    kfree(disk);
+	kref_put(&bt->refcount, release_dev);
+}
+
+static struct bio_stash * stash_get(struct bt_dev * bt)
 {
 	struct bio_stash * stash = NULL;
 	spin_lock(&bt->lock);
-		stash = list_first_entry_or_null(&bt->free, struct bio_stash, entry);
-		if (stash) {
-			list_move(&stash->entry, &bt->inflight);
-		} else {
-			stash = kzalloc(sizeof(struct bio_stash), GFP_KERNEL);
-			if (!stash) return NULL;
-			stash->bt = bt;
-			list_add(&stash->entry, &bt->inflight);
-		}
+		if ((stash = list_first_entry_or_null(&bt->free, struct bio_stash, entry)))
+			list_del(&stash->entry);
 	spin_unlock(&bt->lock);
+
+	if (!stash) {
+		stash = kzalloc(sizeof(struct bio_stash), GFP_KERNEL);
+		if (!stash) return NULL;
+	}
 
 	return stash;
 }
 
-/* return device if it should be released; USE LOCK! 
-	ENSURE CALLER cleared its stash->backing, 
-	otherwise it's stash will prevent free'ing */
-static struct block_device * bt_put_dev(struct bt_dev * bt, struct block_device *bd)
+static void stash_put(struct bio_stash * stash)
 {
-	struct bio_stash * s;
-
-	list_for_each_entry(s, &bt->inflight, entry) {
-		if (s->backing == bd)
-			return NULL;
-	}
-
-	return bd;	
-}
-
-static void bt_put_stash(struct bio_stash * stash)
-{
-	struct bt_dev * bt = stash->bt;
-	struct block_device *putdev = NULL;
-	int exit = 0;
+	struct bt_dev * bt = stash->disk->bt;
 
 	spin_lock(&bt->lock);
-	list_move(&stash->entry, &bt->free); // we can safely call bt_put_dev now
-	if (bt->backing != stash->backing)
-		putdev = bt_put_dev(bt, stash->backing);
-	stash->backing = NULL;
-	exit = bt->exiting && list_empty(&bt->inflight);
+		stash->disk = NULL; // probably unnecessary
+		list_add(&stash->entry, &bt->free);
 	spin_unlock(&bt->lock);
-	
-	if (putdev) blkdev_put(putdev, FMODE_READ);
-	if (exit) complete(&bt->exit);
 }
 
 int should_block(struct bt_dev * bt) 
 {
-	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd_disk->state)));
+	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd->bd_disk->state)));
 }
 
 // assume bio is already pointing to *our* endio and has stash in bi_private
-static void bt_submit_internal(struct bio * bio)
+static void bt_submit_internal(struct bt_dev * bt, struct bio * bio)
 {
 	int block;
 	struct bio_stash * stash = (struct bio_stash *)bio->bi_private;
-	struct bt_dev * bt = stash->bt;
 
 	--stash->tries_remaining;
 
@@ -149,21 +168,26 @@ retry:
 	spin_lock(&bt->lock);
 	if ((block = should_block(bt))) {
 		reinit_completion(&bt->resume);
-		stash->backing = NULL; // todo: is this necessary? is the sumitted stash ever not NULL?
-	} else stash->backing = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
+		stash->disk = NULL;
+	} else {
+		// !note: REQUIRES that !bt->backing or swapping under lock, before calling any backing_put()
+		if (bt->backing)
+			kref_get_unless_zero(&bt->backing->inflight);
+		stash->disk = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
+	}
 	spin_unlock(&bt->lock);
 
 	if (block) {
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
 		goto retry;
-	} else if (stash->backing == NULL) {
+	} else if (stash->disk == NULL) {
 		pw("Setting STS_OFFLINE because there's no backing\n");
 		bio_set_dev(bio, bt->disk->part0); // in case we are a retry that backed a different dev; perhaps unneccessary.
 		bio->bi_status = BLK_STS_OFFLINE;
 		stash->tries_remaining = 0;
 		bio_endio(bio);
 	} else {
-		bio_set_dev(bio, stash->backing);
+		bio_set_dev(bio, stash->disk->bd);
 		submit_bio_noacct(bio);
 	}
 }
@@ -171,21 +195,14 @@ retry:
 static void bt_io_end(struct bio * bio)
 {
 	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
-	struct block_device * putdev = NULL;
+	struct bt_dev * bt = stash->disk->bt;
  
-	if (bio->bi_status == BLK_STS_OFFLINE && stash->backing /* otherwise the disk was dead on submit: preserve the STS_OFFLINE */) {
+	kref_put(&stash->disk->inflight, put_backing); // todo: should we change the bi_dev?
+
+	if (bio->bi_status == BLK_STS_OFFLINE && stash->disk /* otherwise the disk was dead on submit: preserve the STS_OFFLINE */) {
 		if (stash->tries_remaining > 0) {
 			bio->bi_status = BLK_STS_OK;
-			putdev = stash->backing;
-			// put the device ourself (because we are not calling put_stash)
-			spin_lock(&stash->bt->lock);
-			stash->backing = NULL; // so bt_put_dev will work properly
-			if (stash->bt->backing != putdev)
-				putdev = bt_put_dev(stash->bt, putdev);
-			spin_unlock(&stash->bt->lock);
-			if (putdev) blkdev_put(putdev, FMODE_READ);
-
-			bt_submit_internal(bio);
+			bt_submit_internal(bt, bio);
 			return;
 		} else {
 			pr_warn("Switching STS_OFFLINE to STS_IO error.\n");
@@ -195,10 +212,12 @@ static void bt_io_end(struct bio * bio)
 
 	bio->bi_private = stash->bi_private;
 	bio->bi_end_io = stash->bi_end_io;
-	bt_put_stash(stash);
+	stash_put(stash);
 	bio_endio(bio);
+	
 }
 
+/*
 static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
 {
 	int flushed;
@@ -209,20 +228,16 @@ static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
 	
 	return flushed;
 }
+*/
 
 static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 {
-	struct block_device * bd;
-
-	int err = 0;
 	if (bt->exiting)
-		err = -EBUSY;
+		return -EBUSY;
 	else {
 		bt->suspend = 1;
-		bd = bt->backing;
+		return 0;
 	}
-
-	return err;
 }
 
 static void bt_resume(struct bt_dev * bt)
@@ -233,65 +248,74 @@ static void bt_resume(struct bt_dev * bt)
 	spin_unlock(&bt->lock);
 }
 
+static void backing_release(struct disk * disk)
+{
+	unsigned long uptime;
+	struct bt_dev * bt = disk->bt;
+
+	uptime = jiffies - disk->jiffies_when_added;
+	pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+		disk->bd->bd_disk->disk_name,
+		uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+
+	kref_put(&disk->inflight, put_backing);
+}
+
 /**
  * @brief Drop current backing device. Close if not inflight.
  * 
  * @param bt 
  * @param disk Optional. Guarantee that the backing being released is a child of <disk>
  */
-static void bt_backing_release(struct bt_dev *bt, struct gendisk * disk)
+static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 {
-	struct block_device * putdev;
-	unsigned long uptime = jiffies - bt->jiffies_when_added;
+	struct disk * disk;
 
 	if (!bt->backing)
 		return;
 
 	spin_lock(&bt->lock);
-	if (!disk || bt->backing->bd_disk == disk) {
-		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
-				bt->backing->bd_disk->disk_name,
-				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+	if (!gendisk || bt->backing->bd->bd_disk == gendisk) {
 		bt->jiffies_when_removed = jiffies;
-		if ((putdev = bt_put_dev(bt, bt->backing)))
-			 blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
+		disk = bt->backing;
 		bt->backing = NULL;
 	}
-	spin_unlock(&bt->lock); 
+	spin_unlock(&bt->lock);
+
+	backing_release(disk); 
 }
 
 static int test_path(struct kobject * kobj, const char * pattern, int rewind);
 
 // TAKE LOCK BEFORE!
-static void bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
+static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 {
-	struct block_device *putdev;
-	unsigned long uptime;
+	if (bt->backing) {
+		if (bt->backing->bd == bd) {
+			pw("Ignoring swap request. Already in use.\n");
+			return 0;
+		}
 
-	if (bt->backing == bd) {
-		pw("Ignoring swap request. Already in use.\n");
-		return;
+		backing_release(bt->backing);
 	}
+
+	bt->backing = get_backing(bt);
+	if (!bt->backing)
+		return -ENOMEM;
+	bt->backing->bd = bd;
 
 	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
 
-	if (bt->backing) {
-		uptime = jiffies - bt->jiffies_when_added;
-		pw("Releasing disk [%s]; Uptime: %lum%lus\n",
-			bt->backing->bd_disk->disk_name,
-			uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
-		if (((putdev = bt_put_dev(bt, bt->backing))))
-			blkdev_put(putdev, FMODE_READ); // must be in lock to avoid race
-	}
-	bt->backing = bd;
-	bt->jiffies_when_added = jiffies;
 	if (!set_capacity_and_notify(bt->disk, bdev_nr_sectors(bd)))
 		kobject_uevent(&disk_to_dev(bt->disk)->kobj, KOBJ_CHANGE);
 	if (!should_block(bt)) complete_all(&bt->resume);
+
+	return 0;
 }
 
 static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
+	int err = 0;
 	struct block_device * bd;
 
 	bd = blkdev_get_by_path(path, FMODE_READ, holder);
@@ -312,7 +336,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 				bt->persist_pattern = NULL;
 			}
 		}
-		bt_backing_swap(bt, bd);
+		err = bt_backing_swap(bt, bd);
 	spin_unlock(&bt->lock);
 
 	return 0;
@@ -460,7 +484,7 @@ retry:
 		} else {
 			bd = blkdev_get_by_dev(d->disk->part0->bd_dev, FMODE_READ, holder);
 			if (IS_ERR(bd)) {
-				pw("Failed to open disk [%s] with error: %i\n", d->disk->disk_name, PTR_ERR(bd));
+				pw("Failed to open disk [%s] with error: %li\n", d->disk->disk_name, PTR_ERR(bd));
 			} else
 				bt_backing_swap(bt, bd);
 		}
@@ -527,7 +551,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 	spin_lock(&bt->lock);
 	if (bt->backing) {
-		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd_disk)->parent->kobj), GFP_KERNEL);
+		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);
 		pattern = normalize_path(pattern);
 
 		for (kp = devpath, pp = pattern; *kp; ++kp, ++pp) {
@@ -586,7 +610,7 @@ static DEVICE_ATTR_RW(suspend);
 static ssize_t backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct bt_dev * bt = dev_to_bt(dev);
-	struct block_device *bd = bt->backing;
+	struct block_device *bd = bt->backing->bd;
 	if (bd) {
 		strcpy(buf, bd->bd_disk->disk_name);
 		return strlen(buf);
@@ -728,8 +752,8 @@ static struct attribute_group bt_attribute_group = {
 
 static void bt_submit_bio(struct bio *bio)
 {
-	struct bt_dev * bt= bio->bi_bdev->bd_disk->private_data;
-	struct bio_stash * stash = bt_get_stash(bt);
+	struct bt_dev * bt = bio->bi_bdev->bd_disk->private_data;
+	struct bio_stash * stash = stash_get(bt);
 
 	if (!stash) { // we are currently exiting or malloc fail
 		bio->bi_status = BLK_STS_RESOURCE;
@@ -743,7 +767,7 @@ static void bt_submit_bio(struct bio *bio)
 	bio->bi_private = stash;
 	bio->bi_end_io = bt_io_end;
 
-	bt_submit_internal(bio);
+	bt_submit_internal(bt, bio);
 }
 
 static const struct block_device_operations bt_fops = {
@@ -762,12 +786,11 @@ static int bt_alloc(const char * name)
 	if (!bt)
 		return -ENOMEM;
 	
-	//mutex_init(&bt->lock);
 	spin_lock_init(&bt->lock);
+	kref_init(&bt->refcount);
 	init_completion(&bt->resume);
 	init_completion(&bt->exit);
 
-	INIT_LIST_HEAD(&bt->inflight);
 	INIT_LIST_HEAD(&bt->free);
 
 	bt->tries = 1;
@@ -831,11 +854,9 @@ out_free_dev:
 	return err;
 }
 
-#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
 static int bt_del(struct bt_dev *bt)
 {
 	struct bio_stash * stash, * n;
-	int has_inflight = 0;
 	int already_exiting = 0;
 
 	spin_lock(&bt->lock);
@@ -852,13 +873,8 @@ static int bt_del(struct bt_dev *bt)
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	del_gendisk(bt->disk);
 	
-	spin_lock(&bt->lock);
-		has_inflight = !list_empty(&bt->inflight);
-	spin_unlock(&bt->lock);
-	if (has_inflight)
-		wait_for_completion(&bt->exit);
-	
-	if (bt->backing) blkdev_put(bt->backing, FMODE_READ);
+	kref_put(&bt->refcount, release_dev);
+	wait_for_completion(&bt->exit);
 
 	blk_cleanup_disk(bt->disk); // newer kernels just use put_disk
 
