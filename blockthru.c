@@ -15,16 +15,16 @@
 
 #include "regs.h"
 
-#define BT_VER "12"
+#define BT_VER "13"
 
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
 
-#define d(code) pr_warn("Entering code: "#code"\n"); code ; pr_warn("Exiting code: "#code"\n");
-/*
+#define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
+
 #define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
 #define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
 #define spin_trylock(mut) (pr_warn("Pre trylock in %i\n", __LINE__), spin_trylock(mut))
-*/
+
 
 static int bt_major;
 static int bt_minors = 0;
@@ -75,10 +75,10 @@ struct bt_dev {
 	char *	persist_pattern;
 	int 	addtl_depth;
 	unsigned long persist_timeout;
-
-	uint swapped_count;
 	unsigned long jiffies_when_removed;
 
+	uint swapped_count;
+	
 	struct kref refcount;
 };
 
@@ -101,11 +101,13 @@ struct disk * get_backing(struct bt_dev * bt)
 	if (!disk)
 		return NULL;
 	
+	if(!kref_get_unless_zero(&bt->refcount))
+		return NULL;
+
 	kref_init(&disk->inflight);
 	disk->bt = bt;
 	disk->jiffies_when_added = jiffies;
-	kref_get(&bt->refcount);
-
+	
 	return disk;
 }
 
@@ -171,9 +173,9 @@ retry:
 		stash->disk = NULL;
 	} else {
 		// !note: REQUIRES that !bt->backing or swapping under lock, before calling any backing_put()
-		if (bt->backing)
-			kref_get_unless_zero(&bt->backing->inflight);
-		stash->disk = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
+		if (bt->backing && !kref_get_unless_zero(&bt->backing->inflight))
+			stash->disk = NULL;
+		else stash->disk = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
 	}
 	spin_unlock(&bt->lock);
 
@@ -198,6 +200,7 @@ static void bt_io_end(struct bio * bio)
 	struct bt_dev * bt = stash->disk->bt;
  
 	kref_put(&stash->disk->inflight, put_backing); // todo: should we change the bi_dev?
+	bio_set_dev(bio, bt->disk->part0);
 
 	if (bio->bi_status == BLK_STS_OFFLINE && stash->disk /* otherwise the disk was dead on submit: preserve the STS_OFFLINE */) {
 		if (stash->tries_remaining > 0) {
@@ -230,6 +233,7 @@ static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
 }
 */
 
+// todo: do we need a lock?
 static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 {
 	if (bt->exiting)
@@ -302,6 +306,7 @@ static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 	bt->backing = get_backing(bt);
 	if (!bt->backing)
 		return -ENOMEM;
+
 	bt->backing->bd = bd;
 
 	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
@@ -339,7 +344,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 		err = bt_backing_swap(bt, bd);
 	spin_unlock(&bt->lock);
 
-	return 0;
+	return err;
 }
 
 #pragma region persist
@@ -441,6 +446,7 @@ retry:
 			if ((d->old_flags ^ disk->flags) & GD_SUPPRESS_PART_SCAN)
 				pw("Suppressed partscan on disk %s\n", disk->disk_name);
 		}
+		spin_unlock(&bt->lock);
 	} else {
 		if (bt->persist_pattern)
 			goto retry;
@@ -551,7 +557,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 	spin_lock(&bt->lock);
 	if (bt->backing) {
-		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);
+		D(devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);)
 		pattern = normalize_path(pattern);
 
 		for (kp = devpath, pp = pattern; *kp; ++kp, ++pp) {
@@ -563,12 +569,12 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 		if (*pp || (*kp && *kp != '/')) { // this will exclude trailing '/' in pattern
 			pw("Device is not on path: [%.*s]%s != %s\n", (int)(kp - devpath), devpath, kp, pp);
-			ret = -EINVAL;
+			D(ret = -EINVAL;)
 			kfree(devpath);
 		} else {
 			kt = kp;
 			while (*kp) if (*kp++ == '/') bt->addtl_depth++;
-			*kt = '\0';
+			D(*kt = '\0';)
 
 			if (bt->persist_pattern) kfree(bt->persist_pattern);
 			if (!bt->add_probe.handler) {
@@ -579,11 +585,11 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 		}
 	} else {
 		pw("Can't update persistence pattern when no backing device is set\n");
-		ret = -ENODEV;
+		D(ret = -ENODEV;)
 	}
 	spin_unlock(&bt->lock);
 
-	return ret;
+	D(return ret;)
 }
 
 #pragma endregion persist

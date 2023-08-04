@@ -8,6 +8,7 @@
         "moduleparam.h": "c",
         "init.h": "c",
         "module.h": "c",
-        "completion.h": "c"
+        "completion.h": "c",
+        "kprobes.h": "c"
     }
 }
