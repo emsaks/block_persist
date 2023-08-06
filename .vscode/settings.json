@@ -9,6 +9,7 @@
         "init.h": "c",
         "module.h": "c",
         "completion.h": "c",
-        "kprobes.h": "c"
+        "kprobes.h": "c",
+        "backing-dev.h": "c"
     }
 }

@@ -15,16 +15,16 @@
 
 #include "regs.h"
 
-#define BT_VER "13"
+#define BT_VER "25"
 
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
 
 #define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
-
+/*
 #define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
 #define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
 #define spin_trylock(mut) (pr_warn("Pre trylock in %i\n", __LINE__), spin_trylock(mut))
-
+*/
 
 static int bt_major;
 static int bt_minors = 0;
@@ -91,7 +91,7 @@ static LIST_HEAD(bt_devs);
 void release_dev(struct kref *ref)
 {
 	struct bt_dev * bt = container_of(ref, struct bt_dev, refcount);
-	complete(&bt->exit);
+	D(complete(&bt->exit);)
 }
 
 struct disk * get_backing(struct bt_dev * bt)
@@ -143,10 +143,8 @@ static struct bio_stash * stash_get(struct bt_dev * bt)
 	return stash;
 }
 
-static void stash_put(struct bio_stash * stash)
+static void stash_put(struct bt_dev * bt, struct bio_stash * stash)
 {
-	struct bt_dev * bt = stash->disk->bt;
-
 	spin_lock(&bt->lock);
 		stash->disk = NULL; // probably unnecessary
 		list_add(&stash->entry, &bt->free);
@@ -156,6 +154,21 @@ static void stash_put(struct bio_stash * stash)
 int should_block(struct bt_dev * bt) 
 {
 	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd->bd_disk->state)));
+}
+
+static void bt_bio_final(struct bt_dev * bt, struct bio * bio)
+{
+	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
+
+	if (stash->disk)
+		kref_put(&stash->disk->inflight, put_backing);
+
+	bio_set_dev(bio, bt->disk->part0);
+	bio->bi_private = stash->bi_private;
+	bio->bi_end_io = stash->bi_end_io;
+	bio_endio(bio);
+
+	stash_put(bt, stash);
 }
 
 // assume bio is already pointing to *our* endio and has stash in bi_private
@@ -184,10 +197,8 @@ retry:
 		goto retry;
 	} else if (stash->disk == NULL) {
 		pw("Setting STS_OFFLINE because there's no backing\n");
-		bio_set_dev(bio, bt->disk->part0); // in case we are a retry that backed a different dev; perhaps unneccessary.
 		bio->bi_status = BLK_STS_OFFLINE;
-		stash->tries_remaining = 0;
-		bio_endio(bio);
+		bt_bio_final(bt, bio);
 	} else {
 		bio_set_dev(bio, stash->disk->bd);
 		submit_bio_noacct(bio);
@@ -197,27 +208,19 @@ retry:
 static void bt_io_end(struct bio * bio)
 {
 	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
-	struct bt_dev * bt = stash->disk->bt;
- 
-	kref_put(&stash->disk->inflight, put_backing); // todo: should we change the bi_dev?
-	bio_set_dev(bio, bt->disk->part0);
 
 	if (bio->bi_status == BLK_STS_OFFLINE && stash->disk /* otherwise the disk was dead on submit: preserve the STS_OFFLINE */) {
 		if (stash->tries_remaining > 0) {
 			bio->bi_status = BLK_STS_OK;
-			bt_submit_internal(bt, bio);
+			bt_submit_internal(stash->disk->bt, bio);
 			return;
 		} else {
 			pr_warn("Switching STS_OFFLINE to STS_IO error.\n");
-			bio_io_error(bio);
+			bio->bi_status = BLK_STS_IOERR;
 		}
 	}
 
-	bio->bi_private = stash->bi_private;
-	bio->bi_end_io = stash->bi_end_io;
-	stash_put(stash);
-	bio_endio(bio);
-	
+	bt_bio_final(stash->disk->bt, bio);
 }
 
 /*
@@ -435,6 +438,7 @@ retry:
 			return 0;
 
 		if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
+			pw("bt->addtl_depth = %i\n", bt->addtl_depth);
 			pw("Added disk [%s] is not on path: %s. Ignoring.\n", disk->disk_name, bt->persist_pattern);
 		} else if (get_capacity(disk) != get_capacity(bt->disk)) {
 			pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
@@ -462,7 +466,7 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct add_data * d = (void*)ri->data;
 	struct block_device * bd;
 
-	if (!d->disk) return 0;
+	D(if (!d->disk) return 0;)
 
 	// todo: restore flags?
 
@@ -483,7 +487,9 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
 retry:
+	pw("Pre trylock\n");
 	if(spin_trylock(&bt->lock)) {
+		pw("In trylock\n");
 		// pattern may have been switched beneath us
 		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
@@ -523,6 +529,10 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 {
 	int e;
 
+	if (probe->handler) {
+		D(return -EBUSY;)
+	}
+
 	memset(probe, 0, sizeof(*probe));
 	probe->handler        = ret,
 	probe->entry_handler  = entry,
@@ -530,7 +540,7 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 	probe->data_size	  = data_size;
 	probe->kp.symbol_name = symbol_name;
 
-	e = register_kretprobe(probe);
+	D(e = register_kretprobe(probe);)
 	if (e < 0) {
 		pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
 		probe->handler = NULL; // this will flag that the probe has not been set
@@ -574,14 +584,18 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 		} else {
 			kt = kp;
 			while (*kp) if (*kp++ == '/') bt->addtl_depth++;
-			D(*kt = '\0';)
+			*kt = '\0';
 
-			if (bt->persist_pattern) kfree(bt->persist_pattern);
+			D(if (bt->persist_pattern) kfree(bt->persist_pattern);)
 			if (!bt->add_probe.handler) {
-				ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));
-				if (ret) kfree(devpath);
-			} else
-				bt->persist_pattern = devpath;
+				D(ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));)
+			}
+			if (ret) {
+				D(kfree(devpath);)
+				bt->persist_pattern = NULL;
+			} else {
+				D(bt->persist_pattern = devpath;)
+			}
 		}
 	} else {
 		pw("Can't update persistence pattern when no backing device is set\n");
@@ -739,6 +753,31 @@ static ssize_t delete_store(struct device *dev, struct device_attribute *attr, c
 }
 static DEVICE_ATTR_WO(delete);
 
+static ssize_t partscan_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+
+	return sysfs_emit(buf, "%i", !(dev_to_bt(dev)->disk->flags & GD_SUPPRESS_PART_SCAN));
+}
+
+static ssize_t partscan_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct bt_dev * bt = dev_to_bt(dev);
+	if (count > 0) {
+		if (buf[0] == '1') {
+			spin_lock(&bt->lock);
+				bt->disk->flags &= ~GD_SUPPRESS_PART_SCAN;
+			spin_unlock(&bt->lock);
+		} else if (buf[0] == '0') {
+			spin_lock(&bt->lock);
+				bt->disk->flags |= GD_SUPPRESS_PART_SCAN;
+			spin_unlock(&bt->lock);
+		} else return -EINVAL;
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(partscan);
+
 static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
 	&dev_attr_backing.attr,
@@ -747,6 +786,7 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
 	&dev_attr_await_backing.attr,
+	&dev_attr_partscan.attr,
 	NULL,
 };
 
@@ -874,15 +914,24 @@ static int bt_del(struct bt_dev *bt)
 	if (!bt->exiting || already_exiting)
 		return -EBUSY;
 	
-	rip_probes(&bt->add_probe, &bt->del_probe);
+	//blk_mark_disk_dead(bt->disk);
+
 	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	del_gendisk(bt->disk);
-	
-	kref_put(&bt->refcount, release_dev);
-	wait_for_completion(&bt->exit);
+	rip_probes(&bt->add_probe, &bt->del_probe);
 
-	blk_cleanup_disk(bt->disk); // newer kernels just use put_disk
+	bt_backing_release(bt, NULL);
+	// todo: if we have inflight, should we just hang until await_backing is changed (BEFORE sysfs_remove)
+	// or alternatively, for resume on suspend also...?
+	bt->await_backing = 0;
+	complete_all(&bt->resume);
+	
+	D(kref_put(&bt->refcount, release_dev);)
+	D(wait_for_completion(&bt->exit);)
+	
+	D(del_gendisk(bt->disk);)
+
+	D(blk_cleanup_disk(bt->disk);) // newer kernels just use put_disk
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);
