@@ -227,6 +227,10 @@ static void bt_io_end(struct bio * bio)
 	bt_bio_final(stash->disk->bt, bio);
 }
 
+/// @brief Suspend this block device
+/// @param bt 
+/// @param timeout jiffies to wait for backing device to finish; negative to block indefinitely
+/// @return 
 static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 {
 	static DECLARE_WAIT_QUEUE_HEAD(wq);
@@ -628,14 +632,14 @@ static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, c
 static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	int err;
-	unsigned long v;
+	long v;
 
-	err = kstrtoul(buf, 10, &v);
-	if (err || v > UINT_MAX)
+	err = kstrtol(buf, 10, &v);
+	if (err || v > INT_MAX)
 		return -EINVAL;
 
 	if (v > 0) {
-		err = bt_suspend(dev_to_bt(dev), 0);
+		err = bt_suspend(dev_to_bt(dev), v);
 	} else {
 		bt_resume(dev_to_bt(dev));
 	}
