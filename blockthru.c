@@ -15,7 +15,11 @@
 
 #include "regs.h"
 
-#define BT_VER "25"
+#ifdef MAKE_VER
+#define BT_VER MAKE_VER
+#else
+#define BT_VER ""
+#endif
 
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
 
@@ -94,7 +98,7 @@ void release_dev(struct kref *ref)
 	D(complete(&bt->exit);)
 }
 
-struct disk * get_backing(struct bt_dev * bt)
+struct disk * backing_get(struct bt_dev * bt)
 {
 	struct disk * disk = kzalloc(sizeof(struct disk), GFP_KERNEL);
 
@@ -111,7 +115,7 @@ struct disk * get_backing(struct bt_dev * bt)
 	return disk;
 }
 
-void put_backing(struct kref *ref)
+void backing_put(struct kref *ref)
 {
     struct disk *disk = container_of(ref, struct disk, inflight);
 	struct bt_dev * bt = disk->bt;
@@ -161,7 +165,7 @@ static void bt_bio_final(struct bt_dev * bt, struct bio * bio)
 	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
 
 	if (stash->disk)
-		kref_put(&stash->disk->inflight, put_backing);
+		kref_put(&stash->disk->inflight, backing_put);
 
 	bio_set_dev(bio, bt->disk->part0);
 	bio->bi_private = stash->bi_private;
@@ -223,27 +227,35 @@ static void bt_io_end(struct bio * bio)
 	bt_bio_final(stash->disk->bt, bio);
 }
 
-/*
-static int bt_is_flushed(struct bt_dev * bt, struct block_device * bd)
-{
-	int flushed;
-
-	spin_lock(&bt->lock);
-	flushed = bt_put_dev(bt , bd) || !bt->suspend;
-	spin_unlock(&bt->lock);
-	
-	return flushed;
-}
-*/
-
-// todo: do we need a lock?
 static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 {
-	if (bt->exiting)
+	static DECLARE_WAIT_QUEUE_HEAD(wq);
+	struct disk * disk = NULL;
+	unsigned long ret;
+
+	if (bt->exiting) {
 		return -EBUSY;
-	else {
-		bt->suspend = 1;
-		return 0;
+	} else {
+		spin_lock(&bt->lock);
+			bt->suspend = 1;
+			if (timeout && bt->backing) {
+				disk = bt->backing;
+				kref_get(&disk->inflight);
+			}
+		spin_unlock(&bt->lock);
+
+		if (!disk) 
+			return 0;
+
+		if (timeout > 0) {
+			ret = wait_event_interruptible_timeout(wq, kref_read(&disk->inflight) <= 2, timeout);
+			if (!ret) ret = -ETIMEDOUT;
+		} else {
+			ret = wait_event_interruptible(wq, kref_read(&disk->inflight) <= 2);
+		}
+		
+		kref_put(&disk->inflight, backing_put);
+		return ret;
 	}
 }
 
@@ -265,7 +277,7 @@ static void backing_release(struct disk * disk)
 		disk->bd->bd_disk->disk_name,
 		uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 
-	kref_put(&disk->inflight, put_backing);
+	kref_put(&disk->inflight, backing_put);
 }
 
 /**
@@ -306,7 +318,7 @@ static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 		backing_release(bt->backing);
 	}
 
-	bt->backing = get_backing(bt);
+	bt->backing = backing_get(bt);
 	if (!bt->backing)
 		return -ENOMEM;
 
@@ -615,14 +627,19 @@ static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, c
 
 static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	int err = 0;
-	if (count <= 0)
-		return count;
-	if (buf[0] == '1') {
+	int err;
+	unsigned long v;
+
+	err = kstrtoul(buf, 10, &v);
+	if (err || v > UINT_MAX)
+		return -EINVAL;
+
+	if (v > 0) {
 		err = bt_suspend(dev_to_bt(dev), 0);
-	} else if (buf[0] == '0') {
+	} else {
 		bt_resume(dev_to_bt(dev));
 	}
+	
 	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(suspend);
