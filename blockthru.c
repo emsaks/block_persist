@@ -911,12 +911,15 @@ static int bt_alloc(const char * name)
 
 	return 0;
 
+out_rip_probe:
+	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
+	rip_probe(&bt->del_probe);
 out_del_disk:
 	del_gendisk(disk);
 out_cleanup_disk:
-	put_disk(disk);
+	put_disk(disk); // todo: cleanup disk?
 out_free_dev:
-	list_del(&bt->entry); // lock!
+	list_del(&bt->entry); // todo: lock!
 	kfree (bt);
 	return err;
 }
