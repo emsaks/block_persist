@@ -626,7 +626,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%s\n",dev_to_bt(dev)->suspend ? "1" : "0");
+	return sysfs_emit(buf, "%i\n",dev_to_bt(dev)->suspend);
 }
 
 static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -638,7 +638,7 @@ static ssize_t suspend_store(struct device *dev, struct device_attribute *attr, 
 	if (err || v > INT_MAX)
 		return -EINVAL;
 
-	if (v > 0) {
+	if (v != 0) {
 		err = bt_suspend(dev_to_bt(dev), v);
 	} else {
 		bt_resume(dev_to_bt(dev));
