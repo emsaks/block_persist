@@ -903,7 +903,7 @@ static int bt_alloc(const char * name)
 	plant_probe(&bt->del_probe, del_entry, del_ret, "del_gendisk", 0);
 
 	if(!try_module_get(THIS_MODULE))
-		goto out_del_disk;
+		goto out_rip_probe;
 
 	spin_lock(&bt_lock);
 		list_add(&bt->entry, &bt_devs);
@@ -913,7 +913,7 @@ static int bt_alloc(const char * name)
 
 out_rip_probe:
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	rip_probe(&bt->del_probe);
+	unregister_kretprobe(&bt->del_probe);
 out_del_disk:
 	del_gendisk(disk);
 out_cleanup_disk:
