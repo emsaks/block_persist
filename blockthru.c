@@ -768,6 +768,17 @@ void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct bt_dev * bt = dev_to_bt(dev);
+	int already_exiting = 0;
+
+	spin_lock(&bt->lock);
+	if (bt->exiting)
+		already_exiting = 1;
+	else if (!bt->suspend)
+		bt->exiting = 1;
+	spin_unlock(&bt->lock);
+	if (!bt->exiting || already_exiting)
+		return -EBUSY;
+
 	INIT_WORK(&bt->delete, bt_remove_worker);
 	schedule_work(&bt->delete);
 	return count;
@@ -924,19 +935,9 @@ out_free_dev:
 	return err;
 }
 
-static int bt_del(struct bt_dev *bt)
+static void bt_del(struct bt_dev *bt)
 {
 	struct bio_stash * stash, * n;
-	int already_exiting = 0;
-
-	spin_lock(&bt->lock);
-	if (bt->exiting)
-		already_exiting = 1;
-	else if (!bt->suspend)
-		bt->exiting = 1;
-	spin_unlock(&bt->lock);
-	if (!bt->exiting || already_exiting)
-		return -EBUSY;
 	
 	//blk_mark_disk_dead(bt->disk);
 
@@ -961,8 +962,6 @@ static int bt_del(struct bt_dev *bt)
 		kfree(stash);
 
 	if (bt->persist_pattern) kfree(bt->persist_pattern);
-	
-	return 0;
 }
 
 static void bt_put(struct bt_dev * bt)
@@ -971,26 +970,21 @@ static void bt_put(struct bt_dev * bt)
 	module_put(THIS_MODULE);
 }
 
-static int bt_remove(struct bt_dev *bt)
+static void bt_remove(struct bt_dev *bt)
 {
-	int err = bt_del(bt);
-	if (err) 
-		return err;
+	bt_del(bt);
 
 	spin_lock(&bt_lock);
 		list_del(&bt->entry);
 	spin_unlock(&bt_lock);
 
 	bt_put(bt);
-	return 0;
 }
 
 void bt_remove_worker(struct work_struct *work)
 {
 	struct bt_dev * bt = container_of(work, struct bt_dev, delete);
-	int err = bt_remove(bt);
-	if (err) 
-		pr_warn("Failed to delete blockthru disk: %s with error code %i\n", bt->disk->disk_name, err);
+	bt_remove(bt);
 }
 
 static int delete_set(const char *val, const struct kernel_param *kp)
