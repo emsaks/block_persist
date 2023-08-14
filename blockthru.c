@@ -939,8 +939,6 @@ static void bt_del(struct bt_dev *bt)
 {
 	struct bio_stash * stash, * n;
 	
-	//blk_mark_disk_dead(bt->disk);
-
 	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	rip_probes(&bt->add_probe, &bt->del_probe);
@@ -951,12 +949,11 @@ static void bt_del(struct bt_dev *bt)
 	bt->await_backing = 0;
 	complete_all(&bt->resume);
 	
-	D(kref_put(&bt->refcount, release_dev);)
-	D(wait_for_completion(&bt->exit);)
+	kref_put(&bt->refcount, release_dev);
+	wait_for_completion(&bt->exit);
 	
-	D(del_gendisk(bt->disk);)
-
-	D(blk_cleanup_disk(bt->disk);) // newer kernels just use put_disk
+	del_gendisk(bt->disk);
+	blk_cleanup_disk(bt->disk); // newer kernels just use put_disk
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);
@@ -986,28 +983,6 @@ void bt_remove_worker(struct work_struct *work)
 	struct bt_dev * bt = container_of(work, struct bt_dev, delete);
 	bt_remove(bt);
 }
-
-static int delete_set(const char *val, const struct kernel_param *kp)
-{
-	struct bt_dev * bt, * n;
-	spin_lock(&bt_lock);
-	list_for_each_entry_safe(bt, n, &bt_devs, entry) {
-		if (!strncmp(val, bt->disk->disk_name, sizeof(bt->disk->disk_name)))
-			break;
-	}
-	spin_unlock(&bt_lock);
-
-	if list_entry_is_head(bt, &bt_devs, entry)
-		return -ENODEV;
-
-	return bt_remove(bt);
-}
-
-struct kernel_param_ops delete_ops = { 
-	.set = delete_set,
-};
-module_param_cb(delete, &delete_ops, NULL, 0664);
-MODULE_PARM_DESC(delete, "Delete named passthru device");
 
 static int create_set(const char *val, const struct kernel_param *kp)
 {
