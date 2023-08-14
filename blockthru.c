@@ -219,7 +219,8 @@ static void bt_io_end(struct bio * bio)
 			bt_submit_internal(stash->disk->bt, bio);
 			return;
 		} else {
-			pr_warn("Switching STS_OFFLINE to STS_IO error.\n");
+			struct bt_dev * bt = stash->disk->bt; // so the pw() macro will work
+			pw("Switching STS_OFFLINE to STS_IO error.\n");
 			bio->bi_status = BLK_STS_IOERR;
 		}
 	}
@@ -252,10 +253,10 @@ static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 			return 0;
 
 		if (timeout > 0) {
-			ret = wait_event_interruptible_timeout(wq, kref_read(&disk->inflight) <= 2, timeout);
+			ret = wait_event_killable_timeout(wq, kref_read(&disk->inflight) <= 2, timeout);
 			if (!ret) ret = -ETIMEDOUT;
 		} else {
-			ret = wait_event_interruptible(wq, kref_read(&disk->inflight) <= 2);
+			ret = wait_event_killable(wq, kref_read(&disk->inflight) <= 2);
 		}
 		
 		kref_put(&disk->inflight, backing_put);
@@ -433,7 +434,7 @@ static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	d->disk = NULL;
 
 	if (!disk) {
-		pr_warn("add_disk: Disk argument is NULL!\n");
+		pw("add_disk: Disk argument is NULL!\n");
 		return 0;
 	}
 
