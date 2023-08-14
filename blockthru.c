@@ -652,12 +652,15 @@ static DEVICE_ATTR_RW(suspend);
 static ssize_t backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct bt_dev * bt = dev_to_bt(dev);
-	struct block_device *bd = bt->backing->bd;
-	if (bd) {
+	struct block_device *bd;
+	spin_lock(&bt->lock);
+	if (bt->backing && bt->backing-bd) {
+		bd = bt->backing->bd;
 		strcpy(buf, bd->bd_disk->disk_name);
-		return strlen(buf);
-	} else
-		return 0;
+	}
+	spin_unlock(&bt_lock);
+
+	return (bd) ? strlen(buf) : 0;
 }
 
 static ssize_t backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
