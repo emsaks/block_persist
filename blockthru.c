@@ -1,96 +1,16 @@
-#include <linux/init.h>
-#include <linux/initrd.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/major.h>
-#include <linux/blkdev.h>
-#include <linux/bio.h>
-#include <linux/mutex.h>
-#include <linux/fs.h>
-#include <linux/slab.h>
-#include <linux/part_stat.h>
-#include <linux/completion.h>
-#include <linux/backing-dev.h>
-#include <linux/kprobes.h>
 
+#include "blockthru.h"
 #include "regs.h"
-
-#ifdef MAKE_VER
-#define BT_VER MAKE_VER
-#else
-#define BT_VER ""
-#endif
-
-#define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
-
-#define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
-/*
-#define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
-#define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
-#define spin_trylock(mut) (pr_warn("Pre trylock in %i\n", __LINE__), spin_trylock(mut))
-*/
 
 static int bt_major;
 static int bt_minors = 0;
-static char * holder = "blockthru"BT_VER "held disk.";
-
-struct bt_dev;
-
-struct disk {
-	struct bt_dev * bt;
-	struct block_device * bd;
-	struct kref inflight;
-	unsigned long jiffies_when_added;
-};
-
-struct bio_stash {
-	struct list_head entry;
-	struct disk * disk;
-	void * bi_private;
-	bio_end_io_t * bi_end_io;
-	int tries_remaining;
-};
-
-struct bt_dev {
-	struct list_head entry;
-
-	//struct mutex lock;
-	spinlock_t lock;
-	struct gendisk * disk;
-
-	int suspend;
-	struct completion resume;
-
-	struct disk * backing;
-	bool await_backing;
-
-	int exiting;
-	struct completion exit;
-	/*  we can't delete ourself from within a our attribute code, 
-		because the delete code hangs waiting for all attributes
-		to return, so we need a worker for that */
-	struct work_struct delete;
-
-	int tries;
-	struct list_head free;
-
-	struct kretprobe add_probe, del_probe;
-
-	char *	persist_pattern;
-	int 	addtl_depth;
-	unsigned long persist_timeout;
-	unsigned long jiffies_when_removed;
-
-	uint swapped_count;
-	
-	struct kref refcount;
-};
+char * holder = "blockthru"BT_VER "held disk.";
 
 // ll of devices
 DEFINE_SPINLOCK(bt_lock);
 static LIST_HEAD(bt_devs);
-
-#define dev_to_bt(dev) ((struct bt_dev *)dev_to_disk(dev)->private_data)
 
 void release_dev(struct kref *ref)
 {
@@ -309,10 +229,8 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 	backing_release(disk); 
 }
 
-static int test_path(struct kobject * kobj, const char * pattern, int rewind);
-
 // TAKE LOCK BEFORE!
-static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
+int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 {
 	if (bt->backing) {
 		if (bt->backing->bd == bd) {
@@ -338,6 +256,7 @@ static int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 	return 0;
 }
 
+void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
 static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
 	int err = 0;
@@ -350,178 +269,11 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 		return -ENODEV;
 
 	spin_lock(&bt->lock);
-		if (bt->persist_pattern) {
-			if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
-				pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
-				if (bt->add_probe.handler) {
-					unregister_kretprobe(&bt->add_probe);
-					bt->add_probe.handler = NULL;
-				}
-				kfree(bt->persist_pattern);
-				bt->persist_pattern = NULL;
-			}
-		}
+		persist_new_dev(bt, bd);
 		err = bt_backing_swap(bt, bd);
 	spin_unlock(&bt->lock);
 
 	return err;
-}
-
-#pragma region persist
-
-struct add_data {
-	struct gendisk * disk;
-	int old_state;
-};
-
-static const char * normalize_path(const char * path) // allow paths retrieved from sysfs
-{
-	if (!strncmp(path, "/sys/", 5)) return path + 4;
-	if (path[0] == '.' && path[1] == '/') path += 1;
-	if (path[0] == '.' && path[1] == '.' && path[2] == '/') path += 2;
-	while (!strncmp(path, "/../", 4)) path += 3;
-
-	return path;
-}
-
-static int test_path(struct kobject * kobj, const char * pattern, int rewind)
-{
-	const char * part, * pp, * kp;
-
-	if (!kobj) return 1;
-	while (rewind--) if (!(kobj = kobj->parent)) { return 1; }
-
-	part = pattern + strlen(pattern); 
-	do {
-		part -= strlen(kobj->name) + 1;
-		if (part < pattern || *part != '/')
-			{ return 1; }
-
-		for (kp = kobj->name, pp = part+1; *kp; ++kp, ++pp)
-			if ((*kp != *pp) && (*pp != '?'))
-				{ return 1; }
-	} while ((kobj = kobj->parent));
-
-	return part != pattern;
-}
-
-/*
-int try_script(struct persist_c *pc) {
-	int ret;
-	char * envp[] = { "HOME=/", NULL };
-	char * argv[] = { "/bin/bash", pc->opts.script_on_added, pc->name, pc->blkdev->bd_disk->disk_name, NULL };
-
-	if (!pc->opts.script_on_added)
-		return 0;
-
-	pw("Calling user script %s\n", pc->opts.script_on_added);
-
-	ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
-	if (ret) 
-		pw("Script failed with error code %i\n", ret);
-
-	return ret;
-}
-*/
-
-static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	struct gendisk * disk = (void*)regs->ARG2;
-	struct add_data * d = (void*)ri->data;
-	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
-	struct kobject * parent;
-
-	d->disk = NULL;
-
-	if (!disk) {
-		pw("add_disk: Disk argument is NULL!\n");
-		return 0;
-	}
-
-	// we must use parent because the block/sd* parts may not yet have been set
-    parent = &(((struct device *)(regs->ARG1))->kobj);
-
-	if (!parent) {
-		pw("add_disk: Disk [%s] has no parent device! Skipping\n", disk->disk_name);
-		return 0;
-	}
-
-	d->old_state = disk->state;
-
-	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
-retry:
-	if(spin_trylock(&bt->lock)) {
-		if (!bt->persist_pattern) // may be in process of wiping pattern
-			return 0;
-
-		if (test_path(parent, bt->persist_pattern, bt->addtl_depth)) {
-			pw("bt->addtl_depth = %i\n", bt->addtl_depth);
-			pw("Added disk [%s] is not on path: %s. Ignoring.\n", disk->disk_name, bt->persist_pattern);
-		} else if (get_capacity(disk) != get_capacity(bt->disk)) {
-			pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
-		} else {
-			pw("Matched new disk [%s]\n", disk->disk_name);
-			d->disk = disk;
-
-			if (test_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state) && !test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
-				pw("Suppressed partscan on disk %s\n", disk->disk_name);
-				set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
-			}
-		}
-		spin_unlock(&bt->lock);
-	} else {
-		if (bt->persist_pattern)
-			goto retry;
-	 	pw("Ignoring new disk after persistence pattern has been cleared.\n");
-	}
-
-	return 0;
-}
-
-static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
-	struct add_data * d = (void*)ri->data;
-	struct block_device * bd;
-
-	if (!d->disk) return 0;
-
-	if (regs_return_value(regs))
-		return 0;
-
-	if (bt->backing) {
-		pw("New disk found before old one was deleted; Ignoring.\n");
-		return 0;
-	}
-
-	if (bt->persist_timeout && (bt->jiffies_when_removed + bt->persist_timeout < jiffies)) {
-		pw("Not loading new disk after timeout.\n");
-		return 0;
-	}
-
-	// try_script(pc);
-
-	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
-retry:
-	if(spin_trylock(&bt->lock)) {
-		// pattern may have been switched beneath us
-		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
-			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
-		} else {
-			bd = blkdev_get_by_dev(d->disk->part0->bd_dev, FMODE_READ, holder);
-			if (IS_ERR(bd)) {
-				pw("Failed to open disk [%s] with error: %li\n", d->disk->disk_name, PTR_ERR(bd));
-			} else
-				bt_backing_swap(bt, bd);
-		}
-		spin_unlock(&bt->lock);
-	} else {
-		if (bt->persist_pattern)
-			goto retry;
-		pw("Not swapping disk after persistence pattern has been cleared.\n");
-	}
-	
-	return 0;
 }
 
 static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
@@ -538,89 +290,6 @@ static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 }
 
 static int del_ret(struct kretprobe_instance *ri, struct pt_regs *regs) { return 0; }
-
-static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kretprobe_handler_t ret, char * symbol_name, size_t data_size)
-{
-	int e;
-
-	if (probe->handler) {
-		return -EBUSY;
-	}
-
-	memset(probe, 0, sizeof(*probe));
-	probe->handler        = ret,
-	probe->entry_handler  = entry,
-	probe->maxactive      = 20,
-	probe->data_size	  = data_size;
-	probe->kp.symbol_name = symbol_name;
-
-	e = register_kretprobe(probe);
-	if (e < 0) {
-		pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
-		probe->handler = NULL; // this will flag that the probe has not been set
-		return e;
-	}
-
-	return 0;
-}
-
-static void rip_probes(struct kretprobe * add_probe, struct kretprobe * del_probe)
-{
-	if (add_probe->handler) unregister_kretprobe(add_probe);
-	if (del_probe->handler) unregister_kretprobe(del_probe);
-}
-
-static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
-{
-	int ret = 0;
-	char * devpath, *kp, *kt;
-	const char *pp;
-
-	if (count < 5) // normalize_path() minimum
-		return -EINVAL;
-
-	spin_lock(&bt->lock);
-	if (bt->backing) {
-		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);
-		pattern = normalize_path(pattern);
-
-		for (kp = devpath, pp = pattern; *kp; ++kp, ++pp) {
-			if (*kp != *pp) {
-				if (*pp != '?' || *kp == '/') break;
-				*kp = '?'; // '?' is a wildcard
-			}
-		}
-
-		if (*pp || (*kp && *kp != '/')) { // this will exclude trailing '/' in pattern
-			pw("Device is not on path: [%.*s]%s != %s\n", (int)(kp - devpath), devpath, kp, pp);
-			ret = -EINVAL;
-			kfree(devpath);
-		} else {
-			kt = kp;
-			while (*kp) if (*kp++ == '/') bt->addtl_depth++;
-			*kt = '\0';
-
-			if (bt->persist_pattern) kfree(bt->persist_pattern);
-			if (!bt->add_probe.handler) {
-				ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));
-			}
-			if (ret) {
-				kfree(devpath);
-				bt->persist_pattern = NULL;
-			} else {
-				bt->persist_pattern = devpath;
-			}
-		}
-	} else {
-		pw("Can't update persistence pattern when no backing device is set\n");
-		ret = -ENODEV;
-	}
-	spin_unlock(&bt->lock);
-
-	return ret;
-}
-
-#pragma endregion persist
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -674,55 +343,6 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 	return err < 0 ? err : count;
 }
 static DEVICE_ATTR_RW(backing);
-
-static ssize_t persist_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%li", dev_to_bt(dev)->persist_timeout);
-}
-
-static ssize_t persist_timeout_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int err;
-	unsigned long v;
-
-	err = kstrtoul(buf, 10, &v);
-	if (err || v > UINT_MAX)
-		return -EINVAL;
-
-	dev_to_bt(dev)->persist_timeout = v;
-
-	return count;
-}
-static DEVICE_ATTR_RW(persist_timeout);
-
-static ssize_t persist_pattern_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%s\n", dev_to_bt(dev)->persist_pattern);
-}
-
-static ssize_t persist_pattern_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct bt_dev * bt = dev_to_bt(dev);
-	ssize_t ret;
-
-	if (count <= 0) {
-		spin_lock(&bt->lock);
-			if (bt->persist_pattern) {
-				kfree(bt->persist_pattern);
-				bt->persist_pattern = NULL;
-				if (bt->add_probe.handler) {
-					unregister_kretprobe(&bt->add_probe);
-					bt->add_probe.handler = NULL;
-				}
-			}
-		spin_unlock(&bt->lock);
-		return count;
-	} else {
-		ret = set_pattern(bt, buf, count);
-		return ret < 0 ? ret : count;
-	}
-}
-static DEVICE_ATTR_RW(persist_pattern);
 
 static ssize_t tries_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -811,6 +431,9 @@ static ssize_t partscan_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 static DEVICE_ATTR_RW(partscan);
+
+extern struct device_attribute dev_attr_persist_timeout;
+extern struct device_attribute dev_attr_persist_pattern;
 
 static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
@@ -937,13 +560,17 @@ out_free_dev:
 	return err;
 }
 
+void persist_cleanup(struct bt_dev * bt);
+
 static void bt_del(struct bt_dev *bt)
 {
 	struct bio_stash * stash, * n;
 	
 	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	rip_probes(&bt->add_probe, &bt->del_probe);
+	persist_cleanup(bt);
+
+	if (bt->del_probe.handler) unregister_kretprobe(&bt->del_probe);
 
 	bt_backing_release(bt, NULL);
 	// todo: if we have inflight, should we just hang until await_backing is changed (BEFORE sysfs_remove)
@@ -959,8 +586,6 @@ static void bt_del(struct bt_dev *bt)
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);
-
-	if (bt->persist_pattern) kfree(bt->persist_pattern);
 }
 
 static void bt_put(struct bt_dev * bt)
