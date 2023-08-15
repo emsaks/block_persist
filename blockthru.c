@@ -371,7 +371,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 
 struct add_data {
 	struct gendisk * disk;
-	int old_flags;
+	int old_state;
 };
 
 static const char * normalize_path(const char * path) // allow paths retrieved from sysfs
@@ -446,7 +446,7 @@ static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 		return 0;
 	}
 
-	d->old_flags = disk->flags;
+	d->old_state = disk->state;
 
 	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
 retry:
@@ -461,11 +461,12 @@ retry:
 			pw("New disk [%s] capacity doesn't match! Ignoring.\n", disk->disk_name);
 		} else {
 			pw("Matched new disk [%s]\n", disk->disk_name);
-			disk->flags |= (bt->disk->flags & GD_SUPPRESS_PART_SCAN);
 			d->disk = disk;
 
-			if ((d->old_flags ^ disk->flags) & GD_SUPPRESS_PART_SCAN)
+			if (test_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state) && !test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
 				pw("Suppressed partscan on disk %s\n", disk->disk_name);
+				set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+			}
 		}
 		spin_unlock(&bt->lock);
 	} else {
@@ -483,9 +484,7 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct add_data * d = (void*)ri->data;
 	struct block_device * bd;
 
-	D(if (!d->disk) return 0;)
-
-	// todo: restore flags?
+	if (!d->disk) return 0;
 
 	if (regs_return_value(regs))
 		return 0;
@@ -504,9 +503,7 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	// we must use a retry, so we don't wait on the lock while something tries to rip the probe
 retry:
-	pw("Pre trylock\n");
 	if(spin_trylock(&bt->lock)) {
-		pw("In trylock\n");
 		// pattern may have been switched beneath us
 		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
@@ -793,7 +790,7 @@ static DEVICE_ATTR_WO(delete);
 static ssize_t partscan_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 
-	return sysfs_emit(buf, "%i", !(dev_to_bt(dev)->disk->flags & GD_SUPPRESS_PART_SCAN));
+	return sysfs_emit(buf, "%i", !test_bit(GD_SUPPRESS_PART_SCAN, &dev_to_bt(dev)->disk->state));
 }
 
 static ssize_t partscan_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -802,11 +799,11 @@ static ssize_t partscan_store(struct device *dev, struct device_attribute *attr,
 	if (count > 0) {
 		if (buf[0] == '1') {
 			spin_lock(&bt->lock);
-				bt->disk->flags &= ~GD_SUPPRESS_PART_SCAN;
+				clear_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state);
 			spin_unlock(&bt->lock);
 		} else if (buf[0] == '0') {
 			spin_lock(&bt->lock);
-				bt->disk->flags |= GD_SUPPRESS_PART_SCAN;
+				set_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state);
 			spin_unlock(&bt->lock);
 		} else return -EINVAL;
 	}
