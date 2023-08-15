@@ -547,7 +547,7 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 	int e;
 
 	if (probe->handler) {
-		D(return -EBUSY;)
+		return -EBUSY;
 	}
 
 	memset(probe, 0, sizeof(*probe));
@@ -557,7 +557,7 @@ static int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kret
 	probe->data_size	  = data_size;
 	probe->kp.symbol_name = symbol_name;
 
-	D(e = register_kretprobe(probe);)
+	e = register_kretprobe(probe);
 	if (e < 0) {
 		pr_warn("register_kretprobe for %s failed, returned %d\n", symbol_name, e);
 		probe->handler = NULL; // this will flag that the probe has not been set
