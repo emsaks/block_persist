@@ -21,14 +21,22 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     data = (struct instance_data *)ri->data;
     disk = (struct gendisk *)(regs->ARG2);
 
-    if ((test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) || (jiffies > block_all_timeout && jiffies > block_once_timeout)) {
-        data->disk = NULL;
-    } else {
-        pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
+	data->disk = NULL;
+	
+	if (!disk)
+		return 0;
+
+	spin_lock(&partscan_lock);
+	if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->state) && (jiffies <= block_all_timeout || jiffies <= block_once_timeout))
+		data->disk = disk;
+	spin_unlock(&partscan_lock);
+
+	if (data->disk) {
+		pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
 		set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
         data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
 		block_once_timeout = 0;
-    }
+	}
 
     return 0;
 }
@@ -56,6 +64,7 @@ static int block_partscan_get(char *buf, const struct kernel_param *kp)
 	int ret;
 	unsigned long now;
 	
+	spin_lock(&partscan_lock);
 	if (block_all_timeout == ULONG_MAX)
 		ret = 1;
 	else if (block_once_timeout == ULONG_MAX)
@@ -69,7 +78,8 @@ static int block_partscan_get(char *buf, const struct kernel_param *kp)
 		else
 			ret = 0;
 	}
-
+	spin_unlock(&partscan_lock);
+	
 	return sysfs_emit(buf, "%i\n", ret);
 }
 
