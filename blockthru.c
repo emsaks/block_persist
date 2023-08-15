@@ -1014,9 +1014,13 @@ static int __init bt_init(void)
 	return 0;
 }
 
+void block_partscan_cleanup(void);
+
 static void __exit bt_exit(void)
 {
 	bt_cleanup();
+	block_partscan_cleanup();
+
 	unregister_blkdev(bt_major, "bt"BT_VER);
 	
 	pr_info("blockthru"BT_VER": module unloaded\n");
