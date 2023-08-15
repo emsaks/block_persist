@@ -120,4 +120,4 @@ struct kernel_param_ops block_partscan_ops = {
 	.get = block_partscan_get,
 };
 module_param_cb(block_partscan, &block_partscan_ops, NULL, 0664);
-MODULE_PARM_DESC(block_partscan, "Block partition scanning permanently (1) / jiffies (>1) / once (-1) / once upto jiffies (<-1)");
+MODULE_PARM_DESC(block_partscan, "Block partition scan (1) or for (2+) jiffies; negate for one-time block");
