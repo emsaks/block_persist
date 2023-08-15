@@ -245,10 +245,7 @@ static ssize_t persist_pattern_store(struct device *dev, struct device_attribute
 			if (bt->persist_pattern) {
 				kfree(bt->persist_pattern);
 				bt->persist_pattern = NULL;
-				if (bt->add_probe.handler) {
-					unregister_kretprobe(&bt->add_probe);
-					bt->add_probe.handler = NULL;
-				}
+				rip_probe(&bt->add_probe);
 			}
 		spin_unlock(&bt->lock);
 		return count;
@@ -264,10 +261,7 @@ void persist_new_dev(struct bt_dev * bt, struct block_device * bd)
 	if (bt->persist_pattern) {
 		if (!bd->bd_device.parent || test_path(&bd->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("New disk [%s] is not on path: %s; clearing persist settings.\n", bd->bd_disk->disk_name, bt->persist_pattern);
-			if (bt->add_probe.handler) {
-				unregister_kretprobe(&bt->add_probe);
-				bt->add_probe.handler = NULL;
-			}
+			rip_probe(&bt->add_probe);
 			kfree(bt->persist_pattern);
 			bt->persist_pattern = NULL;
 		}
@@ -276,6 +270,6 @@ void persist_new_dev(struct bt_dev * bt, struct block_device * bd)
 
 void persist_cleanup(struct bt_dev * bt)
 {
-	if (bt->add_probe.handler) unregister_kretprobe(&bt->add_probe);
+	rip_probe(&bt->add_probe);
 	if (bt->persist_pattern) kfree(bt->persist_pattern);
 }

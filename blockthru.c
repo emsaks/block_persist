@@ -549,7 +549,7 @@ static int bt_alloc(const char * name)
 
 out_rip_probe:
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	unregister_kretprobe(&bt->del_probe);
+	rip_probe(&bt->del_probe);
 out_del_disk:
 	del_gendisk(disk);
 out_cleanup_disk:
@@ -568,7 +568,7 @@ static void bt_del(struct bt_dev *bt)
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	persist_cleanup(bt);
 
-	if (bt->del_probe.handler) unregister_kretprobe(&bt->del_probe);
+	rip_probe(&bt->del_probe);
 
 	bt_backing_release(bt, NULL);
 	// todo: if we have inflight, should we just hang until await_backing is changed (BEFORE sysfs_remove)

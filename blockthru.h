@@ -106,6 +106,14 @@ static inline int plant_probe(struct kretprobe * probe, kretprobe_handler_t entr
 	return 0;
 }
 
+static inline void rip_probe(struct kretprobe * probe)
+{
+	if (probe->handler) {
+		unregister_kretprobe(probe);
+		probe->handler = NULL;
+	}
+}
+
 extern char * holder;
 int bt_backing_swap(struct bt_dev * bt, struct block_device * bd);
 
