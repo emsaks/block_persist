@@ -95,7 +95,7 @@ static LIST_HEAD(bt_devs);
 void release_dev(struct kref *ref)
 {
 	struct bt_dev * bt = container_of(ref, struct bt_dev, refcount);
-	D(complete(&bt->exit);)
+	complete(&bt->exit);
 }
 
 struct disk * backing_get(struct bt_dev * bt)
@@ -581,7 +581,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 	spin_lock(&bt->lock);
 	if (bt->backing) {
-		D(devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);)
+		devpath = kobject_get_path(&(disk_to_dev(bt->backing->bd->bd_disk)->parent->kobj), GFP_KERNEL);
 		pattern = normalize_path(pattern);
 
 		for (kp = devpath, pp = pattern; *kp; ++kp, ++pp) {
@@ -593,31 +593,31 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 		if (*pp || (*kp && *kp != '/')) { // this will exclude trailing '/' in pattern
 			pw("Device is not on path: [%.*s]%s != %s\n", (int)(kp - devpath), devpath, kp, pp);
-			D(ret = -EINVAL;)
+			ret = -EINVAL;
 			kfree(devpath);
 		} else {
 			kt = kp;
 			while (*kp) if (*kp++ == '/') bt->addtl_depth++;
 			*kt = '\0';
 
-			D(if (bt->persist_pattern) kfree(bt->persist_pattern);)
+			if (bt->persist_pattern) kfree(bt->persist_pattern);
 			if (!bt->add_probe.handler) {
-				D(ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));)
+				ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));
 			}
 			if (ret) {
-				D(kfree(devpath);)
+				kfree(devpath);
 				bt->persist_pattern = NULL;
 			} else {
-				D(bt->persist_pattern = devpath;)
+				bt->persist_pattern = devpath;
 			}
 		}
 	} else {
 		pw("Can't update persistence pattern when no backing device is set\n");
-		D(ret = -ENODEV;)
+		ret = -ENODEV;
 	}
 	spin_unlock(&bt->lock);
 
-	D(return ret;)
+	return ret;
 }
 
 #pragma endregion persist
