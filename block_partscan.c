@@ -62,10 +62,10 @@ static int block_partscan_get(char *buf, const struct kernel_param *kp)
 		ret = -1;
 	else {
 		now = jiffies;
-		if (now > block_all_timeout)
-			ret = now - block_all_timeout;
-		else if (now > block_once_timeout)
-			ret = -(now - block_once_timeout);
+		if (now <= block_all_timeout)
+			ret = block_all_timeout - now;
+		else if (now <= block_once_timeout)
+			ret = -(block_once_timeout - now);
 		else
 			ret = 0;
 	}
