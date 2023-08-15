@@ -256,7 +256,7 @@ int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 	return 0;
 }
 
-void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
+
 static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
 	int err = 0;
@@ -560,8 +560,6 @@ out_free_dev:
 	return err;
 }
 
-void persist_cleanup(struct bt_dev * bt);
-
 static void bt_del(struct bt_dev *bt)
 {
 	struct bio_stash * stash, * n;
@@ -638,8 +636,6 @@ static int __init bt_init(void)
 	pr_info("blockthru"BT_VER": module loaded\n");
 	return 0;
 }
-
-void block_partscan_cleanup(void);
 
 static void __exit bt_exit(void)
 {

@@ -108,3 +108,8 @@ static inline int plant_probe(struct kretprobe * probe, kretprobe_handler_t entr
 
 extern char * holder;
 int bt_backing_swap(struct bt_dev * bt, struct block_device * bd);
+
+void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
+void persist_cleanup(struct bt_dev * bt);
+
+void block_partscan_cleanup(void);
