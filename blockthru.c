@@ -552,7 +552,7 @@ static void bt_del(struct bt_dev *bt)
 	wait_for_completion(&bt->exit);
 	
 	del_gendisk(bt->disk);
-	blk_cleanup_disk(bt->disk); // newer kernels just use put_disk
+	put_disk(bt->disk);
 
 	list_for_each_entry_safe(stash, n, &bt->free, entry)
 		kfree(stash);

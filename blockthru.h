@@ -11,6 +11,7 @@
 #include <linux/backing-dev.h>
 #include <linux/kprobes.h>
 
+#include "compat.h"
 
 #ifdef MAKE_VER
 #define BT_VER MAKE_VER
