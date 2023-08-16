@@ -407,31 +407,6 @@ static ssize_t delete_store(struct device *dev, struct device_attribute *attr, c
 }
 static DEVICE_ATTR_WO(delete);
 
-static ssize_t partscan_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-
-	return sysfs_emit(buf, "%i", !test_bit(GD_SUPPRESS_PART_SCAN, &dev_to_bt(dev)->disk->state));
-}
-
-static ssize_t partscan_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct bt_dev * bt = dev_to_bt(dev);
-	if (count > 0) {
-		if (buf[0] == '1') {
-			spin_lock(&bt->lock);
-				clear_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state);
-			spin_unlock(&bt->lock);
-		} else if (buf[0] == '0') {
-			spin_lock(&bt->lock);
-				set_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state);
-			spin_unlock(&bt->lock);
-		} else return -EINVAL;
-	}
-
-	return count;
-}
-static DEVICE_ATTR_RW(partscan);
-
 extern struct device_attribute dev_attr_persist_timeout;
 extern struct device_attribute dev_attr_persist_pattern;
 
@@ -443,7 +418,6 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
 	&dev_attr_await_backing.attr,
-	&dev_attr_partscan.attr,
 	NULL,
 };
 
@@ -505,8 +479,6 @@ static int bt_alloc(const char * name)
 	disk = bt->disk = blk_alloc_disk(NUMA_NO_NODE);
 	if (!disk)
 		goto out_free_dev;
-
-	set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
 
 	disk->major			= bt_major;
 	disk->first_minor	= bt_minors++; // todo: use a lock!

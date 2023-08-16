@@ -27,7 +27,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		return 0;
 
 	spin_lock(&partscan_lock);
-	if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->state) && (jiffies <= block_all_timeout || jiffies <= block_once_timeout))
+	if (jiffies <= block_all_timeout || jiffies <= block_once_timeout)
 		data->disk = disk;
 	spin_unlock(&partscan_lock);
 
