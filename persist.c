@@ -2,6 +2,7 @@
 #include <linux/moduleparam.h>
 
 #include "blockthru.h"
+#include "compat.h"
 #include "regs.h"
 
 struct add_data {
@@ -98,9 +99,11 @@ retry:
 			pw("Matched new disk [%s]\n", disk->disk_name);
 			d->disk = disk;
 
-			if (test_bit(GD_SUPPRESS_PART_SCAN, &bt->disk->state) && !test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
+			if (!test_no_part_scan(disk)) {
+			//if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
 				pw("Suppressed partscan on disk %s\n", disk->disk_name);
-				set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+				suppress_part_scan(disk);
+				//set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
 			}
 		}
 		spin_unlock(&bt->lock);

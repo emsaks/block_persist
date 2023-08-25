@@ -5,6 +5,7 @@
 
 #include "blockthru.h"
 #include "regs.h"
+#include "compat.h"
 
 DEFINE_SPINLOCK(partscan_lock);
 
@@ -34,7 +35,8 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	if (data->disk) {
 		pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
-		set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+		suppress_part_scan(disk);
+		//set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
         data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
 		block_once_timeout = 0;
 	}
@@ -47,7 +49,8 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     struct gendisk *disk;
 
     disk = ((struct instance_data *)ri->data)->disk;
-    if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+	if (disk) enable_part_scan(disk);
+    //if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
     return 0;
 }
 
@@ -118,7 +121,7 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 		err = register_kretprobe(&partscan_probe);
 		if (err) {
 			pr_warn("register_kretprobe for %s failed, returned %d\n", partscan_probe.kp.symbol_name, err);
-			memset(&partscan_probe.kp, sizeof(partscan_probe.kp), 0);
+			memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 		}
 	}
 	spin_unlock(&partscan_lock);
@@ -130,7 +133,7 @@ void block_partscan_cleanup(void)
 {
 	if (partscan_probe.kp.addr) {
 		unregister_kretprobe(&partscan_probe);
-		memset(&partscan_probe.kp, sizeof(partscan_probe.kp), 0);
+		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 	}
 }
 
