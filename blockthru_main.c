@@ -453,7 +453,6 @@ static void bt_submit_bio(struct bio *bio)
 	bio->bi_end_io = bt_io_end;
 
 	bt_submit_internal(bt, bio);
-	return;
 }
 
 static const struct block_device_operations bt_fops = {
