@@ -105,7 +105,13 @@ static void bt_submit_internal(struct bt_dev * bt, struct bio * bio)
 	--stash->tries_remaining;
 
 retry:	
-	spin_lock(&bt->lock);
+	if (!spin_trylock(&bt->lock)) {
+		stash->disk = NULL;
+		pw("Missed spinlock in bt_submit_internal\n");
+		bio->bi_status = BLK_STS_RESOURCE;
+		bt_bio_final(bt, bio);
+		return;
+	}
 	if ((block = should_block(bt))) {
 		reinit_completion(&bt->resume);
 		stash->disk = NULL;

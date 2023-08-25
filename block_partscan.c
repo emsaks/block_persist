@@ -3,6 +3,7 @@
 #include <linux/kprobes.h>
 #include <linux/blkdev.h>
 
+#include "blockthru.h"
 #include "regs.h"
 
 DEFINE_SPINLOCK(partscan_lock);
