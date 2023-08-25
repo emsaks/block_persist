@@ -100,7 +100,6 @@ retry:
 			d->disk = disk;
 
 			if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE)) {
-			//if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
 				pw("Suppressed partscan on disk %s\n", disk->disk_name);
 				set_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
 			}
