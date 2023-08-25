@@ -24,11 +24,19 @@
 #define pw(fmt, ...) pr_warn("[%s] "fmt, bt->disk->disk_name, ## __VA_ARGS__)
 
 #define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
-/*
+
+static inline int debug_spin_trylock(struct spinlock_t * lock, int line) {
+	int ret;
+	pr_warn("Pre trylock @%i\n", line);
+	ret = (spin_trylock)(lock);
+	pr_warn("Trylock @%i returned %i\n", line, ret);
+	return ret;
+}
+
 #define spin_lock(mut) pr_warn("Pre lock in %i\n", __LINE__); (spin_lock)(mut); pr_warn("Post lock in %i\n", __LINE__);
 #define spin_unlock(mut) pr_warn("Pre unlock in %i\n", __LINE__); (spin_unlock)(mut); pr_warn("Post unlock in %i\n", __LINE__);
-#define spin_trylock(mut) (pr_warn("Pre trylock in %i\n", __LINE__), spin_trylock(mut))
-*/
+#define spin_trylock(mut) (debug_spin_trylock(mut, __LINE__))
+
 
 struct bt_dev;
 
