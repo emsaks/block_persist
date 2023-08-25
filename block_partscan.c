@@ -117,7 +117,7 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 		err = register_kretprobe(&partscan_probe);
 		if (err) {
 			pr_warn("register_kretprobe for %s failed, returned %d\n", partscan_probe.kp.symbol_name, err);
-			memset(&partscan_probe.kp, sizeof(partscan_probe.kp), 0);
+			memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 		}
 	}
 	spin_unlock(&partscan_lock);
@@ -129,7 +129,7 @@ void block_partscan_cleanup(void)
 {
 	if (partscan_probe.kp.addr) {
 		unregister_kretprobe(&partscan_probe);
-		memset(&partscan_probe.kp, sizeof(partscan_probe.kp), 0);
+		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 	}
 }
 
