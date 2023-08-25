@@ -11,8 +11,6 @@
 #include <linux/backing-dev.h>
 #include <linux/kprobes.h>
 
-#include "compat.h"
-
 #ifdef MAKE_VER
 #define BT_VER MAKE_VER
 #else
@@ -25,7 +23,7 @@
 
 #define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
 
-static inline int debug_spin_trylock(struct spinlock_t * lock, int line) {
+static inline int debug_spin_trylock(spinlock_t * lock, int line) {
 	int ret;
 	pr_warn("Pre trylock @%i\n", line);
 	ret = (spin_trylock)(lock);
