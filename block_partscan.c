@@ -35,8 +35,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	if (data->disk) {
 		pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
-		suppress_part_scan(disk);
-		//set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+		set_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
         data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
 		block_once_timeout = 0;
 	}
@@ -49,8 +48,7 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     struct gendisk *disk;
 
     disk = ((struct instance_data *)ri->data)->disk;
-	if (disk) enable_part_scan(disk);
-    //if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+    if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
     return 0;
 }
 

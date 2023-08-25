@@ -99,11 +99,10 @@ retry:
 			pw("Matched new disk [%s]\n", disk->disk_name);
 			d->disk = disk;
 
-			if (!test_no_part_scan(disk)) {
+			if (!test_bit(GD_SUPPRESS_PART_SCAN, &gd->GD_PS_STATE)) {
 			//if (!test_bit(GD_SUPPRESS_PART_SCAN, &disk->state)) {
 				pw("Suppressed partscan on disk %s\n", disk->disk_name);
-				suppress_part_scan(disk);
-				//set_bit(GD_SUPPRESS_PART_SCAN, &disk->state);
+				set_bit(GD_SUPPRESS_PART_SCAN, &gd->GD_PS_STATE;
 			}
 		}
 		spin_unlock(&bt->lock);

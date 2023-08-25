@@ -435,7 +435,7 @@ static struct attribute_group bt_attribute_group = {
 };
 
 
-static SUBMIT_BIO_TYPE bt_submit_bio(struct bio *bio)
+static void bt_submit_bio(struct bio *bio)
 {
 	struct bt_dev * bt = bio->bi_bdev->bd_disk->private_data;
 	struct bio_stash * stash = stash_get(bt);
@@ -443,7 +443,7 @@ static SUBMIT_BIO_TYPE bt_submit_bio(struct bio *bio)
 	if (!stash) { // we are currently exiting or malloc fail
 		bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(bio);
-		return SUBMIT_BIO_RET;
+		return;
 	}
 
 	stash->bi_private = bio->bi_private;
@@ -453,7 +453,7 @@ static SUBMIT_BIO_TYPE bt_submit_bio(struct bio *bio)
 	bio->bi_end_io = bt_io_end;
 
 	bt_submit_internal(bt, bio);
-	return SUBMIT_BIO_RET;
+	return;
 }
 
 static const struct block_device_operations bt_fops = {
