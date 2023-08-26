@@ -6,7 +6,7 @@
 #include "regs.h"
 
 static int bt_major;
-static int bt_minors = 0;
+static atomic_t bt_minors = ATOMIC_INIT(0);
 char * holder = "blockthru"BT_VER "held disk.";
 
 // ll of devices
@@ -488,7 +488,7 @@ static int bt_alloc(const char * name)
 		goto out_free_dev;
 
 	disk->major			= bt_major;
-	disk->first_minor	= bt_minors++; // todo: use a lock!
+	disk->first_minor	= atomic_inc_return(&bt_minors);
 	disk->minors		= 1;
 	disk->fops			= &bt_fops;
 	disk->private_data	= bt;
