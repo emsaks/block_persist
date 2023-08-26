@@ -532,9 +532,11 @@ out_rip_probe:
 out_del_disk:
 	del_gendisk(disk);
 out_cleanup_disk:
-	put_disk(disk); // todo: cleanup disk?
+	put_disk(disk);
 out_free_dev:
-	list_del(&bt->entry); // todo: lock!
+	spin_lock(&bt_lock);
+	list_del(&bt->entry);
+	spin_unlock(&bt_lock);
 	kfree (bt);
 	return err;
 }
