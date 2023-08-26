@@ -333,7 +333,7 @@ static ssize_t backing_show(struct device *dev, struct device_attribute *attr, c
 		bd = bt->backing->bd;
 		strcpy(buf, bd->bd_disk->disk_name);
 	}
-	spin_unlock(&bt_lock);
+	spin_unlock(&bt->lock);
 
 	return (bd) ? strlen(buf) : 0;
 }
