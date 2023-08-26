@@ -55,11 +55,10 @@ void backing_put(struct kref *ref)
 static struct bio_stash * stash_get(struct bt_dev * bt)
 {
 	struct bio_stash * stash = NULL;
-	if (spin_trylock(&bt->lock)) {
+	spin_lock(&bt->lock);
 		if ((stash = list_first_entry_or_null(&bt->free, struct bio_stash, entry)))
 			list_del(&stash->entry);
 	spin_unlock(&bt->lock);
-	}
 
 	if (!stash) {
 		stash = kzalloc(sizeof(struct bio_stash), GFP_KERNEL);
