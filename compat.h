@@ -20,11 +20,12 @@
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)
-#define bt_submit_bio(bioarg) bt_submit_bio_compat(bioarg)
-static void bt_submit_bio_compat(struct bio * bio);
-static inline blk_qc_t (bt_submit_bio)(struct bio * bio)
-{
-	bt_submit_bio_compat(bio);
-	return BLK_QC_T_NONE;
-} 
+#define bt_submit_bio(bioarg)							\
+	bt_submit_bio_compat(bioarg);						\
+	static blk_qc_t (bt_submit_bio)(struct bio * bio)	\
+	{													\
+		bt_submit_bio_compat(bio);						\
+		return BLK_QC_T_NONE;							\
+	}													\
+	static void bt_submit_bio_compat(bioarg)
 #endif
