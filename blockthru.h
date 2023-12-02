@@ -30,6 +30,7 @@ struct backing {
 	struct block_device * bd;
 	struct kref inflight;
 	unsigned long jiffies_when_added;
+	struct work_struct put;
 };
 
 struct bio_stash {

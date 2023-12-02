@@ -36,20 +36,28 @@ struct backing * backing_get(struct bt_dev * bt)
 	return disk;
 }
 
-void backing_put(struct kref *ref)
+void backing_put_worker(struct work_struct * work)
 {
-    struct backing *disk = container_of(ref, struct backing, inflight);
-	struct bt_dev * bt = disk->bt;
-	unsigned long uptime = jiffies - disk->jiffies_when_added;
-
-	blkdev_put(disk->bd, FMODE_READ);
+	struct backing * backing = container_of(work, struct backing, put);
+	struct bt_dev * bt = backing->bt;
+	unsigned long uptime = jiffies - backing->jiffies_when_added;
 
 	pw("Putting disk [%s]; Uptime: %lum%lus\n",
-				disk->bd->bd_disk->disk_name,
+				backing->bd->bd_disk->disk_name,
 				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 
-    kfree(disk);
+	blkdev_put(backing->bd, FMODE_READ);
+
+	kfree(backing);
 	kref_put(&bt->refcount, release_dev);
+}
+
+void backing_put(struct kref *ref)
+{
+	struct backing *backing = container_of(ref, struct backing, inflight);
+	// avoids "Voluntary context switch within RCU read-side critical section!"
+	INIT_WORK(&backing->put, backing_put_worker);
+	schedule_work(&backing->put);
 }
 
 static struct bio_stash * stash_get(struct bt_dev * bt)
@@ -518,6 +526,11 @@ static int bt_alloc(const char * name)
 
 	plant_probe(&bt->del_probe, del_entry, del_ret, "del_gendisk", 0);
 
+	// block module unload until this bt is deleted
+	// an alternative is, upon unload:
+	//	block any new creation
+	//	flush_scheduled_work to flush scheduled deletes
+	//	manually delete any remaining/or return busy
 	if(!try_module_get(THIS_MODULE))
 		goto out_rip_probe;
 
