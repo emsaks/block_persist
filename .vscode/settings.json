@@ -11,5 +11,6 @@
         "completion.h": "c",
         "kprobes.h": "c",
         "backing-dev.h": "c"
-    }
+    },
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }
