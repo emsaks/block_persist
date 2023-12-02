@@ -38,7 +38,7 @@ struct backing * backing_get(struct bt_dev * bt)
 
 void backing_put(struct kref *ref)
 {
-    struct backing *disk = container_of(ref, struct disk, inflight);
+    struct backing *disk = container_of(ref, struct backing, inflight);
 	struct bt_dev * bt = disk->bt;
 	unsigned long uptime = jiffies - disk->jiffies_when_added;
 
