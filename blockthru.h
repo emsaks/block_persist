@@ -25,7 +25,7 @@
 
 struct bt_dev;
 
-struct disk {
+struct backing {
 	struct bt_dev * bt;
 	struct block_device * bd;
 	struct kref inflight;
@@ -34,7 +34,7 @@ struct disk {
 
 struct bio_stash {
 	struct list_head entry;
-	struct disk * disk;
+	struct backing * disk;
 	void * bi_private;
 	bio_end_io_t * bi_end_io;
 	int tries_remaining;
@@ -50,7 +50,7 @@ struct bt_dev {
 	int suspend;
 	struct completion resume;
 
-	struct disk * backing;
+	struct backing * backing;
 	bool await_backing;
 
 	int exiting;

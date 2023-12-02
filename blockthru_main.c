@@ -19,9 +19,9 @@ void release_dev(struct kref *ref)
 	complete(&bt->exit);
 }
 
-struct disk * backing_get(struct bt_dev * bt)
+struct backing * backing_get(struct bt_dev * bt)
 {
-	struct disk * disk = kzalloc(sizeof(struct disk), GFP_KERNEL);
+	struct backing * disk = kzalloc(sizeof(struct backing), GFP_KERNEL);
 
 	if (!disk)
 		return NULL;
@@ -38,7 +38,7 @@ struct disk * backing_get(struct bt_dev * bt)
 
 void backing_put(struct kref *ref)
 {
-    struct disk *disk = container_of(ref, struct disk, inflight);
+    struct backing *disk = container_of(ref, struct disk, inflight);
 	struct bt_dev * bt = disk->bt;
 	unsigned long uptime = jiffies - disk->jiffies_when_added;
 
@@ -162,7 +162,7 @@ static void bt_io_end(struct bio * bio)
 static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 {
 	static DECLARE_WAIT_QUEUE_HEAD(wq);
-	struct disk * disk = NULL;
+	struct backing * disk = NULL;
 	unsigned long ret;
 
 	if (bt->exiting) {
@@ -199,7 +199,7 @@ static void bt_resume(struct bt_dev * bt)
 	spin_unlock(&bt->lock);
 }
 
-static void backing_release(struct disk * disk)
+static void backing_release(struct backing * disk)
 {
 	unsigned long uptime;
 	struct bt_dev * bt = disk->bt;
@@ -220,7 +220,7 @@ static void backing_release(struct disk * disk)
  */
 static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 {
-	struct disk * disk;
+	struct backing * backing = NULL;
 
 	if (!bt->backing)
 		return;
@@ -228,12 +228,13 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 	spin_lock(&bt->lock);
 	if (!gendisk || bt->backing->bd->bd_disk == gendisk) {
 		bt->jiffies_when_removed = jiffies;
-		disk = bt->backing;
+		backing = bt->backing;
 		bt->backing = NULL;
 	}
 	spin_unlock(&bt->lock);
 
-	backing_release(disk); 
+	if (backing)
+		backing_release(backing); 
 }
 
 // TAKE LOCK BEFORE!
