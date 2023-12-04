@@ -55,7 +55,7 @@ void backing_put_worker(struct work_struct * work)
 void backing_put(struct kref *ref)
 {
 	struct backing *backing = container_of(ref, struct backing, inflight);
-	// avoids "Voluntary context switch within RCU read-side critical section!"
+	// avoids "Voluntary context switch within RCU read-side critical section!" via blkdev_put->schedule()
 	INIT_WORK(&backing->put, backing_put_worker);
 	schedule_work(&backing->put);
 }
