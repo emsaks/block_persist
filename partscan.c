@@ -3,6 +3,10 @@
 #include <linux/kprobes.h>
 #include <linux/blkdev.h>
 
+extern int scsi_is_sdev_device(const struct device *);
+extern int scsi_is_target_device(const struct device *);
+
+
 #include "blockthru.h"
 #include "regs.h"
 #include "compat.h"
@@ -10,18 +14,21 @@
 DEFINE_SPINLOCK(partscan_lock);
 
 static unsigned long block_all_timeout = 0, block_once_timeout = 0;
-
+static struct device * previous_scsi_target = NULL;
+static unsigned long jiffies_at_block = 0;
 struct instance_data {
     struct gendisk *disk;
 };
 
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-    struct instance_data *data;
-    struct gendisk *disk;
-
-    data = (struct instance_data *)ri->data;
-    disk = (struct gendisk *)(regs->ARG2);
+	struct instance_data *data;
+	struct gendisk *disk;
+	struct device * dev; 
+	
+	data = (struct instance_data *)ri->data;
+	dev  = (struct device *)(regs->ARG1);
+	disk = (struct gendisk *)(regs->ARG2);
 
 	data->disk = NULL;
 	
@@ -33,30 +40,55 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		data->disk = disk;
 	spin_unlock(&partscan_lock);
 
+	// intercept partition scan for any disk under the same scsi target
+	// if they are added in quick succession (useful for card readers)
+	// even if a one-time block was specified
+	if (   !data->disk 
+		&& previous_scsi_target
+		&& dev
+		&& scsi_is_sdev_device(dev) 
+		&& scsi_is_target_device(dev->parent) 
+		&& dev->parent == previous_scsi_target) {
+
+		if (jiffies > jiffies_at_block && (jiffies - jiffies_at_block) < HZ) {
+			data->disk = disk;
+		} else {
+			previous_scsi_target = NULL;
+		}
+	}	
+
 	if (data->disk) {
-		pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
-		set_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
-        data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
+		if (dev && scsi_is_sdev_device(dev) && scsi_is_target_device(dev->parent)) {
+			jiffies_at_block = jiffies;
+			previous_scsi_target = dev->parent;
+		}
+
+		if (disk->part0->bd_nr_sectors > 0) {
+			pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
+			set_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
+			data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
+		}
+
 		block_once_timeout = 0;
 	}
 
-    return 0;
+	return 0;
 }
 
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-    struct gendisk *disk;
+	struct gendisk *disk;
 
-    disk = ((struct instance_data *)ri->data)->disk;
-    if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
-    return 0;
+	disk = ((struct instance_data *)ri->data)->disk;
+	if (disk) clear_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
+	return 0;
 }
 
 static struct kretprobe partscan_probe = {
-    .handler        = ret_handler,
-    .entry_handler  = entry_handler,
-    .data_size      = sizeof(struct instance_data),
-    .maxactive      = 20,
+	.handler        = ret_handler,
+	.entry_handler  = entry_handler,
+	.data_size      = sizeof(struct instance_data),
+	.maxactive      = 20,
 	.kp.symbol_name	= "device_add_disk",
 };
 

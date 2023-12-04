@@ -1,5 +1,5 @@
 VER := 1
-CFLAGS = -DMAKE_VER=$(VER) -DDEBUG
+CFLAGS = -DMAKE_VER=$(VER)
 obj-m := blockthru$(VER).o
 blockthru$(VER)-objs := blockthru_main.o partscan.o persist.o
 KDIR := /lib/modules/$(shell uname -r)/build
