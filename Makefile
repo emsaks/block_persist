@@ -1,7 +1,7 @@
 VER := 1
 CFLAGS = -DMAKE_VER=$(VER)
 obj-m := blockthru$(VER).o
-blockthru$(VER)-objs := blockthru_main.o partscan.o persist.o
+blockthru$(VER)-objs := blockthru_main.o partscan.o persist.o salvage.o
 KDIR := /lib/modules/$(shell uname -r)/build
 
 PWD := $(shell pwd)
