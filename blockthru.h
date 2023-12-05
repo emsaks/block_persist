@@ -116,3 +116,6 @@ void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
 void persist_cleanup(struct bt_dev * bt);
 
 void block_partscan_cleanup(void);
+
+void prep_bio(struct bio * bio);
+void salvage_bio(struct bio * bio);
