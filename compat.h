@@ -22,7 +22,18 @@ inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
 	
 	h = kzalloc(sizeof(struct bdev_handle), GFP_KERNEL);
 	if (!h) return NULL;
-	h->bdev = blkdev_get_by_path(path, mode, holder, hops);
+	h->bdev = blkdev_get_by_path(path, mode, holder);
+	h->holder = holder;
+	return h;
+}
+
+inline struct bdev_handle *bdev_open_by_dev(dev_t dev, blk_mode_t mode, void *holder,
+				     const struct blk_holder_ops *hops) {
+	struct bdev_handle *h;
+
+	h = kzalloc(sizeof(struct bdev_handle), GFP_KERNEL);
+	if (!h) return NULL;
+	h->bdev = blkdev_get_by_dev(path, mode, holder);
 	h->holder = holder;
 	return h;
 }

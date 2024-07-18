@@ -118,7 +118,7 @@ static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
 	struct add_data * d = (void*)ri->data;
-	struct block_device * bd;
+	struct block_device * bd = NULL;
 
 	if (!d->disk) return 0;
 
@@ -144,11 +144,13 @@ retry:
 		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
 		} else {
-			bd = blkdev_get_by_dev(d->disk->part0->bd_dev, BLK_OPEN_READ, holder);
-			if (IS_ERR(bd)) {
+			struct bdev_handle *h = bdev_open_by_dev(d->disk->part0->bd_dev, BLK_OPEN_READ, holder, NULL);
+			if (!IS_ERR_OR_NULL(h))
+				bd = h->bdev;
+			if (IS_ERR_OR_NULL(bd)) {
 				pw("Failed to open disk [%s] with error: %li\n", d->disk->disk_name, PTR_ERR(bd));
 			} else
-				bt_backing_swap(bt, bd);
+				bt_backing_swap(bt, h);
 		}
 		spin_unlock(&bt->lock);
 	} else {

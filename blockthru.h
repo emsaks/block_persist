@@ -10,6 +10,7 @@
 #include <linux/completion.h>
 #include <linux/backing-dev.h>
 #include <linux/kprobes.h>
+#include <linux/string.h>
 
 #include "debug.h"
 

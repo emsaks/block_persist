@@ -515,7 +515,7 @@ static int bt_alloc(const char * name)
 
 	// todo: sector size; do we need it?
 
-	strlcpy(disk->disk_name, buf, DISK_NAME_LEN);
+	strscpy(disk->disk_name, buf, DISK_NAME_LEN);
 	set_disk_ro(disk, true);
 	set_capacity(disk, 0);
 
