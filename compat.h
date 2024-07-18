@@ -5,6 +5,10 @@
 #define put_disk(disk) blk_cleanup_disk(disk)
 #endif
 
+#ifndef BLK_OPEN_READ
+#define BLK_OPEN_READ BLK_OPEN_READ
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 23) //(6, 8, 0)
 struct bdev_handle {
 	struct block_device *bdev;
@@ -25,7 +29,7 @@ inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
 
 inline void bdev_release(struct bdev_handle *handle) {
 	#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
-	blkdev_put(handle->bd, FMODE_READ);
+	blkdev_put(handle->bd, BLK_OPEN_READ);
 	#else
 	blkdev_put(handle->bd, handle->holder);
 	#endif

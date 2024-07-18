@@ -144,7 +144,7 @@ retry:
 		if (!d->disk->part0->bd_device.parent || test_path(&d->disk->part0->bd_device.parent->kobj, bt->persist_pattern, bt->addtl_depth)) {
 			pw("Added disk [%s] is not on new path: %s. Ignoring.\n", d->disk->disk_name, bt->persist_pattern);
 		} else {
-			bd = blkdev_get_by_dev(d->disk->part0->bd_dev, FMODE_READ, holder);
+			bd = blkdev_get_by_dev(d->disk->part0->bd_dev, BLK_OPEN_READ, holder);
 			if (IS_ERR(bd)) {
 				pw("Failed to open disk [%s] with error: %li\n", d->disk->disk_name, PTR_ERR(bd));
 			} else

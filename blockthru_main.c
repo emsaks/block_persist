@@ -284,7 +284,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 	struct block_device * bd;
 	struct bdev_handle *bdev_handle;
 
-	bdev_handle = bdev_open_by_path(path, FMODE_READ, holder, NULL);
+	bdev_handle = bdev_open_by_path(path, BLK_OPEN_READ, holder, NULL);
 	if (IS_ERR_OR_NULL(bdev_handle))
 		return PTR_ERR(bdev_handle);
 
