@@ -14,8 +14,10 @@ struct bdev_handle {
 
 inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
 		void *holder, const struct blk_holder_ops *hops) {
-	// todo: alloc struct
 	struct bdev_handle *h;
+	
+	h = kzalloc(sizeof(struct bdev_handle), GFP_KERNEL);
+	if (!h) return NULL;
 	h->bdev = blkdev_get_by_path(path, mode, holder, hops);
 	h->holder = holder;
 	return h;
