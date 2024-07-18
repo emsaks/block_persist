@@ -25,6 +25,7 @@ inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
 
 inline void bdev_release(struct bdev_handle *handle) {
 	blkdev_put(handle->bd, FMODE_READ);
+	kfree(handle);
 }
 #endif
 
