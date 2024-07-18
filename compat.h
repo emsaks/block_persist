@@ -5,6 +5,27 @@
 #define put_disk(disk) blk_cleanup_disk(disk)
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 23) //(6, 8, 0)
+struct bdev_handle {
+	struct block_device *bdev;
+	void *holder;
+	// blk_mode_t mode; // not in earlier versions...
+};
+
+inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
+		void *holder, const struct blk_holder_ops *hops) {
+	// todo: alloc struct
+	struct bdev_handle *h;
+	h->bdev = blkdev_get_by_path(path, mode, holder, hops);
+	h->holder = holder;
+	return h;
+}
+
+inline void bdev_release(struct bdev_handle *handle) {
+	blkdev_put(handle->bd, FMODE_READ);
+}
+#endif
+
 #ifdef GD_SUPPRESS_PART_SCAN
 #define GD_PS_STATE state
 #else
