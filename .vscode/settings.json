@@ -10,7 +10,8 @@
         "module.h": "c",
         "completion.h": "c",
         "kprobes.h": "c",
-        "backing-dev.h": "c"
+        "backing-dev.h": "c",
+        "cstdlib": "c"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }

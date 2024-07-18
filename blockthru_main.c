@@ -46,7 +46,7 @@ void backing_put_worker(struct work_struct * work)
 				backing->bd->bd_disk->disk_name,
 				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
 
-	blkdev_put(backing->bd, FMODE_READ);
+	bdev_release(backing->bdev_handle);
 
 	kfree(backing);
 	kref_put(&bt->refcount, release_dev);
@@ -248,10 +248,12 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 }
 
 // TAKE LOCK BEFORE!
-int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
+int bt_backing_swap(struct bt_dev * bt, struct bdev_handle *handle)
 {
+	struct block_device *bd = handle->bdev;
+
 	if (bt->backing) {
-		if (bt->backing->bd == bd) {
+		if (bt->backing->bd == handle->bdev) {
 			pw("Ignoring swap request. Already in use.\n");
 			return 0;
 		}
@@ -263,6 +265,7 @@ int bt_backing_swap(struct bt_dev * bt, struct block_device * bd)
 	if (!bt->backing)
 		return -ENOMEM;
 
+	bt->backing->bdev_handle = handle;
 	bt->backing->bd = bd;
 
 	pw("Swapping backing to %s\n", bd->bd_disk->disk_name);
@@ -279,8 +282,13 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 {
 	int err = 0;
 	struct block_device * bd;
+	struct bdev_handle *bdev_handle;
 
-	bd = blkdev_get_by_path(path, FMODE_READ, holder);
+	bdev_handle = bdev_open_by_path(path, FMODE_READ, holder, NULL);
+	if (IS_ERR_OR_NULL(bdev_handle))
+		return PTR_ERR(bdev_handle);
+
+	bd = bdev_handle->bdev;
 	if (IS_ERR(bd))
 		return PTR_ERR(bd);
 	if (!bd)

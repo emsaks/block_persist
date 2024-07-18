@@ -24,7 +24,11 @@ inline struct bdev_handle *bdev_open_by_path(const char *path, blk_mode_t mode,
 }
 
 inline void bdev_release(struct bdev_handle *handle) {
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
 	blkdev_put(handle->bd, FMODE_READ);
+	#else
+	blkdev_put(handle->bd, handle->holder);
+	#endif
 	kfree(handle);
 }
 #endif

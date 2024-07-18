@@ -28,6 +28,7 @@ struct bt_dev;
 struct backing {
 	struct bt_dev * bt;
 	struct block_device * bd;
+	struct bdev_handle * bdev_handle;
 	struct kref inflight;
 	unsigned long jiffies_when_added;
 	struct work_struct put;
