@@ -296,7 +296,7 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 
 	spin_lock(&bt->lock);
 		persist_new_dev(bt, bd);
-		err = bt_backing_swap(bt, bd);
+		err = bt_backing_swap(bt, bdev_handle);
 	spin_unlock(&bt->lock);
 
 	return err;
