@@ -10,7 +10,7 @@ static atomic_t bt_minors = ATOMIC_INIT(0);
 char * holder = "blockthru"BT_VER "held disk.";
 
 // ll of devices
-DEFINE_SPINLOCK(bt_lock);
+DEFINE_SPINLOCK(btlock);
 static LIST_HEAD(bt_devs);
 
 void release_dev(struct kref *ref)
@@ -485,10 +485,23 @@ static int bt_alloc(const char * name)
 	struct gendisk *disk;
 	char buf[DISK_NAME_LEN];
 	int err = -ENOMEM;
+	ssize_t namelen;
+
+	namelen = strscpy(buf, name, DISK_NAME_LEN);
+	if (namelen == -E2BIG || !namelen)
+		return -ENOTNAM;
+	
+	if (buf[namelen-1] == '\n') {
+		if (namelen == 1)
+			return -ENOTNAM;
+		buf[namelen-1] = '\0';
+	}
 
 	bt = kzalloc(sizeof(*bt), GFP_KERNEL);
 	if (!bt)
 		return -ENOMEM;
+
+	// todo: check name available
 	
 	spin_lock_init(&bt->lock);
 	kref_init(&bt->refcount);
@@ -500,9 +513,6 @@ static int bt_alloc(const char * name)
 	bt->tries = 1;
 	bt->await_backing = 1;
 
-	// todo: check name available
-	snprintf(buf, DISK_NAME_LEN, name);
-	
 	disk = bt->disk = blk_alloc_disk(NUMA_NO_NODE);
 	if (!disk)
 		goto out_free_dev;
@@ -545,9 +555,9 @@ static int bt_alloc(const char * name)
 	if(!try_module_get(THIS_MODULE))
 		goto out_rip_probe;
 
-	spin_lock(&bt_lock);
+	spin_lock(&btlock);
 		list_add(&bt->entry, &bt_devs);
-	spin_unlock(&bt_lock);
+	spin_unlock(&btlock);
 
 	return 0;
 
@@ -559,9 +569,6 @@ out_del_disk:
 out_cleanup_disk:
 	put_disk(disk);
 out_free_dev:
-	spin_lock(&bt_lock);
-	list_del(&bt->entry);
-	spin_unlock(&bt_lock);
 	kfree (bt);
 	return err;
 }
@@ -602,9 +609,9 @@ static void bt_remove(struct bt_dev *bt)
 {
 	bt_del(bt);
 
-	spin_lock(&bt_lock);
+	spin_lock(&btlock);
 		list_del(&bt->entry);
-	spin_unlock(&bt_lock);
+	spin_unlock(&btlock);
 
 	bt_put(bt);
 }
