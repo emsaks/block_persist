@@ -13,13 +13,13 @@ char * holder = "blockthru"BT_VER "held disk.";
 DEFINE_SPINLOCK(btlock);
 static LIST_HEAD(bt_devs);
 
-void release_dev(struct kref *ref)
+static void release_dev(struct kref *ref)
 {
 	struct bt_dev * bt = container_of(ref, struct bt_dev, refcount);
 	complete(&bt->exit);
 }
 
-struct backing * backing_get(struct bt_dev * bt)
+static struct backing * backing_get(struct bt_dev * bt)
 {
 	struct backing * disk = kzalloc(sizeof(struct backing), GFP_KERNEL);
 
@@ -36,7 +36,7 @@ struct backing * backing_get(struct bt_dev * bt)
 	return disk;
 }
 
-void backing_put_worker(struct work_struct * work)
+static void backing_put_worker(struct work_struct * work)
 {
 	struct backing * backing = container_of(work, struct backing, put);
 	struct bt_dev * bt = backing->bt;
@@ -52,7 +52,7 @@ void backing_put_worker(struct work_struct * work)
 	kref_put(&bt->refcount, release_dev);
 }
 
-void backing_put(struct kref *ref)
+static void backing_put(struct kref *ref)
 {
 	struct backing *backing = container_of(ref, struct backing, inflight);
 	// avoids "Voluntary context switch within RCU read-side critical section!" via blkdev_put->schedule()
@@ -84,7 +84,7 @@ static void stash_put(struct bt_dev * bt, struct bio_stash * stash)
 	spin_unlock(&bt->lock);
 }
 
-int should_block(struct bt_dev * bt) 
+static int should_block(struct bt_dev * bt) 
 {
 	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd->bd_disk->state)));
 }
