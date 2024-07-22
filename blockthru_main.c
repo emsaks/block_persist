@@ -283,10 +283,24 @@ static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t cou
 	int err = 0;
 	struct block_device * bd;
 	struct bdev_handle *bdev_handle;
+	char * mut_path;
+	ssize_t pathlen;
 
-	bdev_handle = bdev_open_by_path(path, BLK_OPEN_READ, holder, NULL);
-	if (IS_ERR_OR_NULL(bdev_handle))
+	mut_path = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (!mut_path) return -ENOMEM;
+	pathlen = strscpy(mut_path, path, PATH_MAX);
+
+retry:
+	bdev_handle = bdev_open_by_path(mut_path, BLK_OPEN_READ, holder, NULL);
+	if (IS_ERR_OR_NULL(bdev_handle)) {
+		if ((pathlen > 1) && (mut_path[pathlen - 1] == '\n')) {
+			mut_path[--pathlen] = '\0';
+			goto retry;
+		}
+		kfree(mut_path);
 		return PTR_ERR(bdev_handle);
+	}
+	kfree(mut_path);
 
 	bd = bdev_handle->bdev;
 	if (IS_ERR(bd))
@@ -360,7 +374,7 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 {
 	int err;
 
-	if (count <= 0 || buf[0] == '\0') {
+	if (count <= 0 || buf[0] == '\0' || ((buf[0] == '\n') && (count == 1))) {
 		bt_backing_release(dev_to_bt(dev), NULL);
 		return count;
 	}
