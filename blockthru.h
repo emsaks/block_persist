@@ -31,7 +31,7 @@ struct backing {
 	struct block_device * bd;
 	struct bdev_handle * bdev_handle;
 	struct kref inflight;
-	unsigned long jiffies_when_added;
+	unsigned long timestamp;
 	struct work_struct put;
 };
 
