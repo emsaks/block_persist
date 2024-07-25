@@ -40,11 +40,11 @@ static void backing_put_worker(struct work_struct * work)
 {
 	struct backing * backing = container_of(work, struct backing, put);
 	struct bt_dev * bt = backing->bt;
-	unsigned long uptime = jiffies - backing->timestamp;
+	unsigned long downtime = jiffies - backing->timestamp;
 
-	pw("Putting disk [%s]; Downtime: %lum%lus\n",
+	pw("Putting disk [%s]; Downtime: %luh%lum%lus\n",
 				backing->bd->bd_disk->disk_name,
-				uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+				downtime / (HZ*3600), (downtime % (HZ*3600)) / (HZ*60), (downtime % (HZ*60)) / HZ);
 
 	bdev_release(backing->bdev_handle);
 
@@ -215,9 +215,9 @@ static void backing_release(struct backing * disk)
 	struct bt_dev * bt = disk->bt;
 
 	uptime = jiffies - disk->timestamp;
-	pw("Releasing disk [%s]; Uptime: %lum%lus\n",
+	pw("Releasing disk [%s]; Uptime: %luh%lum%lus\n",
 		disk->bd->bd_disk->disk_name,
-		uptime / (HZ*60), (uptime % (HZ*60)) / HZ);
+		uptime / (HZ*3600), (uptime % (HZ*3600)) / (HZ*60), (uptime % (HZ*60)) / HZ);
 
 	disk->timestamp = jiffies; // so we can calculate downtime from release till put
 	kref_put(&disk->inflight, backing_put);
