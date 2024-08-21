@@ -12,7 +12,7 @@ void prep_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 
-	if (op_is_write(bio->bi_opf))
+	if (bio->bi_opf != 0)
 		return;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -37,6 +37,9 @@ size_t salvage_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 	
+	if (bio->bi_opf != 0)
+		return;
+
 	bio_for_each_segment(bvec, bio, iter) {
 		magic.page = bvec.bv_page;
 		mem = bvec_kmap_local(&bvec);

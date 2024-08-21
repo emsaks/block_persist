@@ -158,8 +158,10 @@ static void bt_io_end(struct bio * bio)
 			pw("Switching STS_OFFLINE to STS_IO error.\n");
 			bio->bi_status = BLK_STS_IOERR;
 		}
-	} else if (bio->bi_status == BLK_STS_IOERR && op_is_write(bio->bi_opf)) {
+#ifdef SALVAGE
+	} else if (bio->bi_status == BLK_STS_IOERR) {
 		salvage_bio(bio);
+#endif
 	}
 
 	bt_bio_final(stash->disk->bt, bio);
@@ -485,7 +487,9 @@ static void bt_submit_bio(struct bio *bio)
 	bio->bi_private = stash;
 	bio->bi_end_io = bt_io_end;
 
+#ifdef SALVAGE
 	prep_bio(bio);
+#endif
 	bt_submit_internal(bt, bio);
 }
 
