@@ -38,7 +38,7 @@ size_t salvage_bio(struct bio * bio)
 	struct bvec_iter iter;
 	
 	if (bio->bi_opf != 0)
-		return;
+		return 0;
 
 	bio_for_each_segment(bvec, bio, iter) {
 		magic.page = bvec.bv_page;
