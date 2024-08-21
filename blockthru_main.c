@@ -429,6 +429,8 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 }
 static DEVICE_ATTR_RW(await_backing);
 
+
+
 void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -450,9 +452,6 @@ static ssize_t delete_store(struct device *dev, struct device_attribute *attr, c
 }
 static DEVICE_ATTR_WO(delete);
 
-extern struct device_attribute dev_attr_persist_timeout;
-extern struct device_attribute dev_attr_persist_pattern;
-
 static struct attribute *bt_attrs[] = {
 	&dev_attr_delete.attr,
 	&dev_attr_backing.attr,
@@ -461,6 +460,9 @@ static struct attribute *bt_attrs[] = {
 	&dev_attr_persist_pattern.attr,
 	&dev_attr_tries.attr,
 	&dev_attr_await_backing.attr,
+#ifdef SALVAGE
+	&dev_attr_salvaged_bytes.attr,
+#endif
 	NULL,
 };
 

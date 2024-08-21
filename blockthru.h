@@ -119,5 +119,11 @@ void persist_cleanup(struct bt_dev * bt);
 
 void block_partscan_cleanup(void);
 
+extern struct device_attribute dev_attr_persist_timeout;
+extern struct device_attribute dev_attr_persist_pattern;
+
+#ifdef SALVAGE
 void prep_bio(struct bio * bio);
 void salvage_bio(struct bio * bio);
+extern struct device_attribute dev_attr_salvaged_bytes;
+#endif

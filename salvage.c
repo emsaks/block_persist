@@ -1,5 +1,7 @@
 #include <linux/bio.h>
 
+unsigned long total_salvaged_bytes = 0;
+
 struct {
 	char magic[17];
 	void * page;
@@ -62,5 +64,8 @@ size_t salvage_bio(struct bio * bio)
 		pr_warn("Salvaged %zu bytes in %i segments.\n", salvaged, salvaged_segments);
 	}
 
+	total_salvaged_bytes += salvaged;
 	return salvaged;
 }
+
+DEVICE_ULONG_ATTR(salvaged_bytes, 0444, total_salvaged_bytes);
