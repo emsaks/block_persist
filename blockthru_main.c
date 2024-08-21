@@ -7,7 +7,7 @@
 
 static int bt_major;
 static atomic_t bt_minors = ATOMIC_INIT(0);
-char * holder = "blockthru"BT_VER "held disk.";
+char * holder = "blockthru"BT_VER_STR "held disk.";
 
 // ll of devices
 DEFINE_SPINLOCK(btlock);
@@ -661,13 +661,13 @@ static void bt_cleanup(void)
 
 static int __init bt_init(void)
 {
-	bt_major = register_blkdev(0, "bt"BT_VER);
+	bt_major = register_blkdev(0, "bt" BT_VER_STR);
 	if (bt_major < 0) {
-		pr_info("blockthru"BT_VER": module NOT loaded !\n");
+		pr_info("blockthru" BT_VER_STR ": module NOT loaded !\n");
 		return -EIO;
 	}
 
-	pr_info("blockthru"BT_VER": module loaded\n");
+	pr_info("blockthru" BT_VER_STR ": module loaded\n");
 	return 0;
 }
 
@@ -676,9 +676,9 @@ static void __exit bt_exit(void)
 	bt_cleanup();
 	block_partscan_cleanup();
 
-	unregister_blkdev(bt_major, "bt"BT_VER);
+	unregister_blkdev(bt_major, "bt" BT_VER_STR);
 	
-	pr_info("blockthru"BT_VER": module unloaded\n");
+	pr_info("blockthru" BT_VER_STR ": module unloaded\n");
 }
 
 module_init(bt_init);

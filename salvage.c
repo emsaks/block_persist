@@ -14,7 +14,7 @@ void prep_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 
-	if (bio->bi_opf != 0)
+	if (bio->bi_opf != REQ_OP_READ)
 		return;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -39,7 +39,7 @@ size_t salvage_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 	
-	if (bio->bi_opf != 0)
+	if (bio->bi_opf != REQ_OP_READ)
 		return 0;
 
 	bio_for_each_segment(bvec, bio, iter) {

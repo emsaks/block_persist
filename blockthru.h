@@ -14,11 +14,13 @@
 
 #include "debug.h"
 
-#ifdef MAKE_VER
-#define BT_VER MAKE_VER
-#else
+#define STRINGIFY2(x) #x
+#define STRINGIFY(x) STRINGIFY2(x)
+
+#ifndef BT_VER
 #define BT_VER ""
 #endif
+#define BT_VER_STR STRINGIFY(BT_VER)
 
 #define dev_to_bt(dev) ((struct bt_dev *)dev_to_disk(dev)->private_data)
 
