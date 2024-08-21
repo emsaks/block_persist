@@ -53,8 +53,8 @@ inline void bdev_release(struct bdev_handle *handle) {
 #else
 #define GD_SUPPRESS_PART_SCAN GENHD_FL_NO_PART_SCAN
 #define GD_PS_STATE flags
-#define set_bit(flag, addr) *(addr) |= (flag)
-#define clear_bit(flag, addr) *(addr) &= ~(flag)
+#define set_bit(flag, addr) (*(addr) |= (flag))
+#define clear_bit(flag, addr) (*(addr) &= ~(flag))
 #define test_bit(flag, addr) (*(addr) & (flag))
 #endif
 
