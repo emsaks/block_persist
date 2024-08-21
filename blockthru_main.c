@@ -7,7 +7,7 @@
 
 static int bt_major;
 static atomic_t bt_minors = ATOMIC_INIT(0);
-char * holder = "blockthru"BT_VER_STR "held disk.";
+char * holder = "blockthru"BT_VER_STR " held disk.";
 
 // ll of devices
 DEFINE_SPINLOCK(btlock);
