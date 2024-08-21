@@ -20,6 +20,14 @@ struct instance_data {
     struct gendisk *disk;
 };
 
+static int should_block() {
+	int block;
+	spin_lock(&partscan_lock);
+	block = jiffies <= block_all_timeout || jiffies <= block_once_timeout;
+	spin_unlock(&partscan_lock);
+	return block;
+}
+
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct instance_data *data;
@@ -35,10 +43,8 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	if (!disk)
 		return 0;
 
-	spin_lock(&partscan_lock);
-	if (jiffies <= block_all_timeout || jiffies <= block_once_timeout)
+	if (should_block())
 		data->disk = disk;
-	spin_unlock(&partscan_lock);
 
 	// intercept partition scan for any disk under the same scsi target
 	// if they are added in quick succession (useful for card readers)
