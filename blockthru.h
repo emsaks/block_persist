@@ -119,6 +119,7 @@ int bt_backing_swap(struct bt_dev * bt, struct bdev_handle * handle);
 void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
 void persist_cleanup(struct bt_dev * bt);
 
+void block_partscan_init(void);
 void block_partscan_cleanup(void);
 
 extern struct device_attribute dev_attr_persist_timeout;

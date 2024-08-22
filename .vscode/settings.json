@@ -12,7 +12,8 @@
         "kprobes.h": "c",
         "backing-dev.h": "c",
         "cstdlib": "c",
-        "sd.h": "c"
+        "sd.h": "c",
+        "blkdev.h": "c"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }

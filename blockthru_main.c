@@ -667,6 +667,8 @@ static int __init bt_init(void)
 		return -EIO;
 	}
 
+	block_partscan_init();
+
 	pr_info("blockthru" BT_VER_STR ": module loaded\n");
 	return 0;
 }
