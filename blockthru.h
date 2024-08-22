@@ -126,6 +126,6 @@ extern struct device_attribute dev_attr_persist_pattern;
 
 #ifdef SALVAGE
 void prep_bio(struct bio * bio);
-void salvage_bio(struct bio * bio);
+size_t salvage_bio(struct bio * bio);
 extern struct device_attribute dev_attr_salvaged_bytes;
 #endif

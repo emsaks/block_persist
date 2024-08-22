@@ -20,7 +20,8 @@ struct instance_data {
     struct gendisk *disk;
 };
 
-static int should_block() {
+static int should_block(void)
+{
 	int block;
 	spin_lock(&partscan_lock);
 	block = jiffies <= block_all_timeout || jiffies <= block_once_timeout;
@@ -98,6 +99,35 @@ static struct kretprobe partscan_probe = {
 	.kp.symbol_name	= "device_add_disk",
 };
 
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <drivers/scsi/sd.h>
+
+static int zero_entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	if (!should_block())
+		return 0;
+
+	struct scsi_disk *sdkp = scsi_disk((struct gendisk *)regs->ARG1);
+	struct scsi_device *sdp = sdkp->device;
+	pr_warn("Disabling read_before_ms");
+	sdp->read_before_ms = 0;
+	return 0;
+}
+
+static int zero_ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	return 0;
+}
+
+static struct kretprobe read_zero_probe = {
+	.handler        = zero_ret_handler,
+	.entry_handler  = zero_entry_handler,
+	.data_size      = 0,
+	.maxactive      = 20,
+	.kp.symbol_name	= "sd_revalidate_disk.isra.0",
+};
+
 // best effort to return useful information; might be improvable
 static int block_partscan_get(char *buf, const struct kernel_param *kp)
 {
@@ -159,18 +189,15 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 			pr_warn("register_kretprobe for %s failed, returned %d\n", partscan_probe.kp.symbol_name, err);
 			memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 		}
+		err = register_kretprobe(&read_zero_probe);
+		if (err) {
+			pr_warn("register_kretprobe for %s failed, returned %d\n", read_zero_probe.kp.symbol_name, err);
+			memset(&read_zero_probe.kp, 0, sizeof(read_zero_probe.kp));
+		}
 	}
 	spin_unlock(&partscan_lock);
 
 	return 0;
-}
-
-void block_partscan_cleanup(void)
-{
-	if (partscan_probe.kp.addr) {
-		unregister_kretprobe(&partscan_probe);
-		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
-	}
 }
 
 struct kernel_param_ops block_partscan_ops = { 
@@ -179,3 +206,16 @@ struct kernel_param_ops block_partscan_ops = {
 };
 module_param_cb(block_partscan, &block_partscan_ops, NULL, 0664);
 MODULE_PARM_DESC(block_partscan, "Block partition scan (1) or for (2+) jiffies; negate for one-time block");
+
+void block_partscan_cleanup(void)
+{
+	if (partscan_probe.kp.addr) {
+		unregister_kretprobe(&partscan_probe);
+		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
+	}
+
+	if (read_zero_probe.kp.addr) {
+		unregister_kretprobe(&read_zero_probe);
+		memset(&read_zero_probe.kp, 0, sizeof(read_zero_probe.kp));
+	}
+}

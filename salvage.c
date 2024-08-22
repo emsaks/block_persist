@@ -1,4 +1,5 @@
 #include <linux/bio.h>
+#include "blockthru.h"
 
 unsigned long total_salvaged_bytes = 0;
 
@@ -68,4 +69,8 @@ size_t salvage_bio(struct bio * bio)
 	return salvaged;
 }
 
-DEVICE_ULONG_ATTR(salvaged_bytes, 0444, total_salvaged_bytes);
+static ssize_t salvaged_bytes_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%lu\n", total_salvaged_bytes);
+}
+DEVICE_ATTR_RO(salvaged_bytes);

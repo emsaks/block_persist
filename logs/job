@@ -1,0 +1,9 @@
+[m+(job:61): [32m'[' -z cycle ']'
+[m+(job:66): [32m[[ cycle =~ -.* ]]
+[m+(job:93): [32m'[' '!' -e ./job.conf ']'
+[m+(job:94): [32mecho 'Can'\''t find job.conf; Aborting.'
+[m+(job:95): [32mexit
+[m+(job:1): [32mexport 'PS4=\[\e[m\]'
+[m+(job:1): [32mPS4='\[\e[m\]'
+[mdate
+[mecho Wed Aug 21 10:22:36 PM UTC 2024
