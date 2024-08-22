@@ -108,7 +108,13 @@ static int zero_entry_handler(struct kretprobe_instance *ri, struct pt_regs *reg
 	if (!should_block())
 		return 0;
 
-	struct scsi_disk *sdkp = scsi_disk((struct gendisk *)regs->ARG1);
+	struct gendisk * gd = (struct gendisk *)regs->ARG1;
+	if (PTR_ERR_OR_ZERO(gd) || gd->disk_name[0] != 's' || gd->disk_name[1] != 'd' || gd->disk_name[3] != '\0') {
+		pr_warn("Bug: Doesn't look like we got a gendisk in %s", read_zero_probe.kp.symbol_name);
+		return 0;
+	}
+
+	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
 	pr_warn("Disabling read_before_ms");
 	sdp->read_before_ms = 0;
