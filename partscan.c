@@ -120,7 +120,7 @@ static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 
 	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
-	if (read_before_ms) {
+	if (!read_before_ms) {
 		pr_warn("Disabling read_before_ms for disk: %s", gd->disk_name);
 		sdp->read_before_ms = 0;
 	}
