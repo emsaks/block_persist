@@ -40,29 +40,24 @@ size_t salvage_bio(struct bio * bio)
 
 	bio_for_each_segment(bvec, bio, iter) {
 		magic.page = bvec.bv_page;
+
 		mem = bvec_kmap_local(&bvec);
 		for (magic.off = 0; magic.off < bvec.bv_len; magic.off += 512) {
-			if (!memcmp(mem, &magic, sizeof(magic)))
+			if (!memcmp(mem, &magic, sizeof(magic))) {
+				magic.page = NULL;
 				break;
+			}
 			salvaged += 512;
 		}
-
 		kunmap_local(mem);
-		if (magic.off < bvec.bv_len)
+
+		if (!magic.page)
 			break;
 	}
 
 	if (salvaged) {
-		struct bio_vec * bvec = bio_last_bvec_all(bio);
-		magic.page = bvec->bv_page;
-		mem = bvec_kmap_local(bvec);
-		magic.off = bvec->bv_len - 512;
-		if (memcmp(mem, &magic, sizeof(magic)))
-			bvec = NULL;
-		kunmap_local(mem);
-
-		if (!bvec) {
-			pr_warn("Salvage bug? Final sector was modified even though bio has error");
+		if (magic.page) {
+			pr_warn("Salvage: Bug? Final sector was modified even though bio has error");
 		} else {
 			pr_warn("Salvaged %zu bytes.\n", salvaged);
 			total_salvaged_bytes += salvaged;
