@@ -116,7 +116,7 @@ static int zero_entry_handler(struct kretprobe_instance *ri, struct pt_regs *reg
 
 	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
-	pr_warn("Disabling read_before_ms");
+	pr_warn("Disabling read_before_ms for disk: %s", gd->disk_name);
 	sdp->read_before_ms = 0;
 	return 0;
 }
