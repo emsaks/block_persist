@@ -103,14 +103,21 @@ static struct kretprobe partscan_probe = {
 #include <scsi/scsi_device.h>
 #include <drivers/scsi/sd.h>
 
-static int sd_revalidate_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs);
+
+static struct kprobe sd_revalidate_probe = {
+	.pre_handler  = sd_revalidate_handler,
+	.symbol_name	= "sd_revalidate_disk.isra.0",
+};
+
+static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 {
 	if (!should_block())
 		return 0;
 
 	struct gendisk * gd = (struct gendisk *)regs->ARG1;
 	if (PTR_ERR_OR_ZERO(gd) || gd->disk_name[0] != 's' || gd->disk_name[1] != 'd' || gd->disk_name[3] != '\0') {
-		pr_warn("Bug: Doesn't look like we got a gendisk in %s", sd_revalidate_probe.kp.symbol_name);
+		pr_warn("Bug: Doesn't look like we got a gendisk in %s", sd_revalidate_probe.symbol_name);
 		return 0;
 	}
 
@@ -120,19 +127,6 @@ static int sd_revalidate_handler(struct kretprobe_instance *ri, struct pt_regs *
 	sdp->read_before_ms = 0;
 	return 0;
 }
-
-static int sd_revalidate_ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	return 0;
-}
-
-static struct kretprobe sd_revalidate_probe = {
-	.handler        = sd_revalidate_ret_handler,
-	.entry_handler  = sd_revalidate_handler,
-	.data_size      = 0,
-	.maxactive      = 20,
-	.kp.symbol_name	= "sd_revalidate_disk.isra.0",
-};
 
 // best effort to return useful information; might be improvable
 static int block_partscan_get(char *buf, const struct kernel_param *kp)
@@ -195,10 +189,10 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 			pr_warn("register_kretprobe for %s failed, returned %d\n", partscan_probe.kp.symbol_name, err);
 			memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 		}
-		err = register_kretprobe(&sd_revalidate_probe);
+		err = register_kprobe(&sd_revalidate_probe);
 		if (err) {
-			pr_warn("register_kretprobe for %s failed, returned %d\n", sd_revalidate_probe.kp.symbol_name, err);
-			memset(&sd_revalidate_probe.kp, 0, sizeof(sd_revalidate_probe.kp));
+			pr_warn("register_kprobe for %s failed, returned %d\n", sd_revalidate_probe.symbol_name, err);
+			memset(&sd_revalidate_probe, 0, sizeof(sd_revalidate_probe));
 		}
 	}
 	spin_unlock(&partscan_lock);
@@ -220,8 +214,8 @@ void block_partscan_cleanup(void)
 		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
 	}
 
-	if (sd_revalidate_probe.kp.addr) {
-		unregister_kretprobe(&sd_revalidate_probe);
-		memset(&sd_revalidate_probe.kp, 0, sizeof(sd_revalidate_probe.kp));
+	if (sd_revalidate_probe.addr) {
+		unregister_kprobe(&sd_revalidate_probe);
+		memset(&sd_revalidate_probe, 0, sizeof(sd_revalidate_probe));
 	}
 }
