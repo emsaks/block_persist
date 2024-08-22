@@ -471,7 +471,6 @@ static struct attribute_group bt_attribute_group = {
 	.attrs	= bt_attrs,
 };
 
-
 static void bt_submit_bio(struct bio *bio)
 {
 	struct bt_dev * bt = bio->bi_bdev->bd_disk->private_data;

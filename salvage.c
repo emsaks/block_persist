@@ -1,7 +1,7 @@
 #include <linux/bio.h>
 #include "blockthru.h"
 
-unsigned long total_salvaged_bytes = 0;
+size_t total_salvaged_bytes = 0;
 
 struct {
 	char magic[17];
@@ -15,7 +15,7 @@ void prep_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 
-	if (bio->bi_opf != REQ_OP_READ)
+	if (total_salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
 		return;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -35,7 +35,7 @@ size_t salvage_bio(struct bio * bio)
 	struct bvec_iter iter;
 	size_t salvaged = 0;
 
-	if (bio->bi_opf != REQ_OP_READ)
+	if (total_salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
 		return 0;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -59,7 +59,7 @@ size_t salvage_bio(struct bio * bio)
 		if (magic.page) {
 			pr_warn("Salvage: Bug? Final sector was modified even though bio has error");
 		} else {
-			pr_warn("Salvaged %zu bytes.\n", salvaged);
+			pr_warn("Salvaged %zi bytes.\n", salvaged);
 			total_salvaged_bytes += salvaged;
 		}
 	}
@@ -71,4 +71,16 @@ static ssize_t salvaged_bytes_show(struct device *dev, struct device_attribute *
 {
 	return sysfs_emit(buf, "%lu\n", total_salvaged_bytes);
 }
-DEVICE_ATTR_RO(salvaged_bytes);
+static ssize_t salvaged_bytes_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	int err;
+	size_t v;
+
+	err = kstrtol(buf, 10, &v);
+	if (err || v > INT_MAX)
+		return -EINVAL;
+
+	total_salvaged_bytes = v;
+	return count;
+}
+DEVICE_ATTR_RW(salvaged_bytes);
