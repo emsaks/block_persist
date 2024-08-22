@@ -19,6 +19,7 @@ static unsigned long jiffies_at_block = 0;
 struct instance_data {
     struct gendisk *disk;
 };
+bool read_before_ms = 0;
 
 static int should_block(void)
 {
@@ -119,8 +120,10 @@ static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 
 	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
-	pr_warn("Disabling read_before_ms for disk: %s", gd->disk_name);
-	sdp->read_before_ms = 0;
+	if (read_before_ms) {
+		pr_warn("Disabling read_before_ms for disk: %s", gd->disk_name);
+		sdp->read_before_ms = 0;
+	}
 	return 0;
 }
 
@@ -184,6 +187,9 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 }
 module_param_call(block_partscan, block_partscan_set, block_partscan_get, NULL, 0664);
 MODULE_PARM_DESC(block_partscan, "Block partition scan (1) or for (2+) jiffies; negate for one-time block");
+
+module_param(read_before_ms, bool, 0664);
+MODULE_PARM_DESC(read_before_ms, "Allow a dummy read when initializing disk. Some disks require it.");
 
 void block_partscan_init(void)
 {
