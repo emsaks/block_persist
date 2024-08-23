@@ -72,7 +72,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		}
 
 		if (disk->part0->bd_nr_sectors > 0) {
-			pr_warn("Intercepted partition read for disk: %s.\n", disk->disk_name);
+			pr_warn("[%s] Intercepted partition read\n", disk->disk_name);
 			set_bit(GD_SUPPRESS_PART_SCAN, &disk->GD_PS_STATE);
 			data->disk = disk; // store this so we can remove the NO_PARTSCAN flag on function return
 		}
@@ -114,14 +114,14 @@ static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 
 	struct gendisk * gd = (struct gendisk *)regs->ARG1;
 	if (PTR_ERR_OR_ZERO(gd) || gd->disk_name[0] != 's' || gd->disk_name[1] != 'd' || gd->disk_name[3] != '\0') {
-		pr_warn("Bug: Doesn't look like we got a gendisk in %s", sd_revalidate_probe.symbol_name);
+		pr_warn("Bug: Doesn't look like we got a gendisk in %s\n", sd_revalidate_probe.symbol_name);
 		return 0;
 	}
 
 	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
 	if (!read_before_ms) {
-		pr_warn("Disabling read_before_ms for disk: %s", gd->disk_name);
+		pr_warn("[%s] Disabling read_before_ms\n", gd->disk_name);
 		sdp->read_before_ms = 0;
 	}
 	return 0;
