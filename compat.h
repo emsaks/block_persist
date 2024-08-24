@@ -6,7 +6,7 @@
 #endif
 
 #ifndef BLK_OPEN_READ
-#define BLK_OPEN_READ BLK_OPEN_READ
+#define BLK_OPEN_READ FMODE_READ
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 23) //(6, 8, 0)
