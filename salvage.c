@@ -71,4 +71,5 @@ size_t salvage_bio(struct bio * bio)
 	return salvaged;
 }
 
-DEVICE_ATTR_LONG_RW(salvaged_bytes, dev_to_bt(dev));
+DEVICE_ATTR_LONG_FUNCS(salvaged_bytes, dev_to_bt(dev));
+DEVICE_ATTR_RW(salvaged_bytes);

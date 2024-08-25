@@ -280,7 +280,6 @@ int bt_backing_swap(struct bt_dev * bt, struct bdev_handle *handle)
 	return 0;
 }
 
-
 static int bt_backing_swap_path(struct bt_dev *bt, const char * path, size_t count)
 {
 	int err = 0;
@@ -387,29 +386,12 @@ static ssize_t backing_store(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RW(backing);
 
-static ssize_t tries_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%i", dev_to_bt(dev)->tries);
-}
-
-static ssize_t tries_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int err;
-	unsigned long v;
-
-	err = kstrtoul(buf, 10, &v);
-	if (err || v > UINT_MAX)
-		return -EINVAL;
-
-	dev_to_bt(dev)->tries = v;
-
-	return count;
-}
+DEVICE_ATTR_ULONG_FUNCS(tries, dev_to_bt(dev));
 static DEVICE_ATTR_RW(tries);
 
 static ssize_t await_backing_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%i", dev_to_bt(dev)->tries);
+	return sysfs_emit(buf, "%i", dev_to_bt(dev)->await_backing);
 }
 
 static ssize_t await_backing_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -428,8 +410,6 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 	return count;
 }
 static DEVICE_ATTR_RW(await_backing);
-
-
 
 void bt_remove_worker(struct work_struct *work);
 static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)

@@ -65,7 +65,7 @@ struct bt_dev {
 		to return, so we need a worker for that */
 	struct work_struct delete;
 
-	int tries;
+	unsigned long tries;
 	struct list_head free;
 
 	struct kretprobe add_probe, del_probe;
@@ -134,7 +134,27 @@ size_t salvage_bio(struct bio * bio);
 extern struct device_attribute dev_attr_salvaged_bytes;
 #endif
 
-#define DEVICE_ATTR_LONG_ACC(name, perms, accessor_via_dev)									\
+#define DEVICE_ATTR_LONG_FUNCS_ACC(name, accessor_via_dev)									\
+static ssize_t name ## _show(struct device *dev, struct device_attribute *attr, char *buf)	\
+{																							\
+	return sysfs_emit(buf, "%li\n", accessor_via_dev);										\
+}																							\
+static ssize_t name ## _store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)	\
+{																												\
+	int err;																									\
+	long v;																										\
+																												\
+	err = kstrtol(buf, 10, &v);																					\
+	if (err || v > INT_MAX)																						\
+		return -EINVAL;																							\
+																												\
+	(accessor_via_dev) = v;																						\
+	return count;																								\
+}																												\
+
+#define DEVICE_ATTR_LONG_FUNCS(name, dev_to_parent) DEVICE_ATTR_LONG_FUNCS_ACC(name, (dev_to_parent)->name)
+
+#define DEVICE_ATTR_ULONG_FUNCS_ACC(name, accessor_via_dev)									\
 static ssize_t name ## _show(struct device *dev, struct device_attribute *attr, char *buf)	\
 {																							\
 	return sysfs_emit(buf, "%lu\n", accessor_via_dev);										\
@@ -144,12 +164,12 @@ static ssize_t name ## _store(struct device *dev, struct device_attribute *attr,
 	int err;																									\
 	unsigned long v;																							\
 																												\
-	err = kstrtol(buf, 10, &v);																					\
-	if (err || v > INT_MAX)																						\
+	err = kstrtoul(buf, 10, &v);																				\
+	if (err || v > UINT_MAX)																					\
 		return -EINVAL;																							\
 																												\
 	(accessor_via_dev) = v;																						\
 	return count;																								\
-}
+}																												\
 
-#define DEVICE_ATTR_LONG_RW(name, dev_to_parent) DEVICE_ATTR_LONG_ACC(name, 0664, (dev_to_parent)->name)
+#define DEVICE_ATTR_ULONG_FUNCS(name, dev_to_parent) DEVICE_ATTR_ULONG_FUNCS_ACC(name, (dev_to_parent)->name)

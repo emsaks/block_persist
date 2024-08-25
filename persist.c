@@ -212,25 +212,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 	return ret;
 }
 
-
-static ssize_t persist_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%li", dev_to_bt(dev)->persist_timeout);
-}
-
-static ssize_t persist_timeout_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int err;
-	unsigned long v;
-
-	err = kstrtoul(buf, 10, &v);
-	if (err || v > UINT_MAX)
-		return -EINVAL;
-
-	dev_to_bt(dev)->persist_timeout = v;
-
-	return count;
-}
+DEVICE_ATTR_ULONG_FUNCS(persist_timeout, dev_to_bt(dev));
 DEVICE_ATTR_RW(persist_timeout);
 
 static ssize_t persist_pattern_show(struct device *dev, struct device_attribute *attr, char *buf)
