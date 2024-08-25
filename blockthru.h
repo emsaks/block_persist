@@ -73,6 +73,9 @@ struct bt_dev {
 	char *	persist_pattern;
 	int 	addtl_depth;
 	unsigned long persist_timeout;
+
+	long salvaged_bytes;
+
 	unsigned long jiffies_when_removed;
 
 	uint swapped_count;
@@ -130,3 +133,23 @@ void prep_bio(struct bio * bio);
 size_t salvage_bio(struct bio * bio);
 extern struct device_attribute dev_attr_salvaged_bytes;
 #endif
+
+#define DEVICE_ATTR_LONG_ACC(name, perms, accessor_via_dev)									\
+static ssize_t name ## _show(struct device *dev, struct device_attribute *attr, char *buf)	\
+{																							\
+	return sysfs_emit(buf, "%lu\n", accessor_via_dev);										\
+}																							\
+static ssize_t name ## _store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)	\
+{																												\
+	int err;																									\
+	unsigned long v;																							\
+																												\
+	err = kstrtol(buf, 10, &v);																					\
+	if (err || v > INT_MAX)																						\
+		return -EINVAL;																							\
+																												\
+	(accessor_via_dev) = v;																						\
+	return count;																								\
+}
+
+#define DEVICE_ATTR_LONG_RW(name, dev_to_parent) DEVICE_ATTR_LONG_ACC(name, 0664, (dev_to_parent)->name)

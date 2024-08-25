@@ -1,8 +1,6 @@
 #include <linux/bio.h>
 #include "blockthru.h"
 
-size_t total_salvaged_bytes = 0;
-
 struct {
 	char magic[17];
 	void * page;
@@ -15,7 +13,10 @@ void prep_bio(struct bio * bio)
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 
-	if (total_salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
+	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
+	struct bt_dev * bt = stash->disk->bt;
+
+	if (bt->salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
 		return;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -35,7 +36,10 @@ size_t salvage_bio(struct bio * bio)
 	struct bvec_iter iter;
 	size_t salvaged = 0;
 
-	if (total_salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
+	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
+	struct bt_dev * bt = stash->disk->bt;
+
+	if (bt->salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
 		return 0;
 
 	bio_for_each_segment(bvec, bio, iter) {
@@ -57,30 +61,14 @@ size_t salvage_bio(struct bio * bio)
 
 	if (salvaged) {
 		if (magic.page) {
-			pr_warn("Salvage: Bug? Final sector was modified even though bio has error");
+			pw("Salvage: Bug? Final sector was modified even though bio has error");
 		} else {
-			pr_warn("Salvaged %zi bytes.\n", salvaged);
-			total_salvaged_bytes += salvaged;
+			pw("Salvaged %zi bytes.\n", salvaged);
+			bt->salvaged_bytes += salvaged;
 		}
 	}
 
 	return salvaged;
 }
 
-static ssize_t salvaged_bytes_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%lu\n", total_salvaged_bytes);
-}
-static ssize_t salvaged_bytes_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int err;
-	size_t v;
-
-	err = kstrtol(buf, 10, &v);
-	if (err || v > INT_MAX)
-		return -EINVAL;
-
-	total_salvaged_bytes = v;
-	return count;
-}
-DEVICE_ATTR_RW(salvaged_bytes);
+DEVICE_ATTR_LONG_RW(salvaged_bytes, dev_to_bt(dev));
