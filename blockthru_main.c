@@ -10,7 +10,7 @@ static atomic_t bt_minors = ATOMIC_INIT(0);
 char * holder = "blockthru"BT_VER_STR " held disk.";
 
 // ll of devices
-DEFINE_SPINLOCK(btlock);
+DEFINE_MUTEX(btlock);
 static LIST_HEAD(bt_devs);
 
 static void release_dev(struct kref *ref)
@@ -533,9 +533,9 @@ static int bt_alloc(const char * name)
 	if(!try_module_get(THIS_MODULE))
 		goto out_rip_probe;
 
-	spin_lock(&btlock);
+	mutex_lock(&btlock);
 		list_add(&bt->entry, &bt_devs);
-	spin_unlock(&btlock);
+	mutex_unlock(&btlock);
 
 	return 0;
 
@@ -605,7 +605,7 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 {
 	int err = -ENODEV;
 	struct bt_dev * bt, * n;
-	spin_lock(&btlock);
+	mutex_lock(&btlock);
 		list_for_each_entry(bt, &bt_devs, entry) {
 			if (!strncmp(val, bt->disk->disk_name, strnlen(bt->disk->disk_name, DISK_NAME_LEN))) {
 				err = bt_try_exit(bt);
@@ -614,7 +614,7 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 				break;
 			}
 		}
-	spin_unlock(&btlock);
+	mutex_unlock(&btlock);
 
 	if (err)
 		return err;
