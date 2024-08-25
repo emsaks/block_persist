@@ -583,14 +583,20 @@ static void bt_put(struct bt_dev * bt)
 	module_put(THIS_MODULE);
 }
 
-static int bt_enter_remove(struct bt_dev * bt) {
+static int bt_try_exit(struct bt_dev * bt) {
+	int already_exiting = 0;
+
 	spin_lock(&bt->lock);
-	if (!bt->suspend)
+	if (bt->exiting)
+		already_exiting = 1;
+	else if (!bt->suspend)
 		bt->exiting = 1;
 	spin_unlock(&bt->lock);
 
 	if (!bt->exiting)
 		return -EBUSY;
+	if (already_exiting) // this is only necessary if we allow deleting from a device attribute, to prevent a race
+		return -EALREADY;
 
 	return 0;
 }
@@ -602,7 +608,7 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 	spin_lock(&btlock);
 		list_for_each_entry_safe(bt, n, &bt_devs, entry) {
 			if (!strncmp(val, bt->disk->disk_name, strnlen(bt->disk->disk_name, DISK_NAME_LEN))) {
-				err = bt_enter_remove(bt);
+				err = bt_try_exit(bt);
 				if (!err)
 					list_del(&bt->entry);
 				break;
