@@ -177,30 +177,29 @@ static int bt_suspend(struct bt_dev * bt, unsigned long timeout)
 	struct backing * disk = NULL;
 	unsigned long ret;
 
-	if (bt->exiting) {
+	if (bt->exiting)
 		return -EBUSY;
-	} else {
-		spin_lock(&bt->lock);
-			bt->suspend = 1;
-			if (timeout && bt->backing) {
-				disk = bt->backing;
-				kref_get(&disk->inflight);
-			}
-		spin_unlock(&bt->lock);
 
-		if (!disk) 
-			return 0;
-
-		if (timeout > 0) {
-			ret = wait_event_killable_timeout(wq, kref_read(&disk->inflight) <= 2, timeout);
-			if (!ret) ret = -ETIMEDOUT;
-		} else {
-			ret = wait_event_killable(wq, kref_read(&disk->inflight) <= 2);
+	spin_lock(&bt->lock);
+		bt->suspend = 1;
+		if (timeout && bt->backing) {
+			disk = bt->backing;
+			kref_get(&disk->inflight);
 		}
-		
-		kref_put(&disk->inflight, backing_put);
-		return ret;
+	spin_unlock(&bt->lock);
+
+	if (!disk) 
+		return 0;
+
+	if (timeout > 0) {
+		ret = wait_event_killable_timeout(wq, kref_read(&disk->inflight) <= 2, timeout);
+		if (!ret) ret = -ETIMEDOUT;
+	} else {
+		ret = wait_event_killable(wq, kref_read(&disk->inflight) <= 2);
 	}
+	
+	kref_put(&disk->inflight, backing_put);
+	return ret;
 }
 
 static void bt_resume(struct bt_dev * bt)
@@ -603,6 +602,7 @@ static int bt_try_exit(struct bt_dev * bt) {
 static int delete_set(const char *val, const struct kernel_param *kp)
 {
 	int err = -ENODEV;
+
 	struct bt_dev * bt;
 	mutex_lock(&btlock);
 		list_for_each_entry(bt, &bt_devs, entry) {
