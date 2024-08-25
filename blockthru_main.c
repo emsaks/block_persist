@@ -411,29 +411,7 @@ static ssize_t await_backing_store(struct device *dev, struct device_attribute *
 }
 static DEVICE_ATTR_RW(await_backing);
 
-void bt_remove_worker(struct work_struct *work);
-static ssize_t delete_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct bt_dev * bt = dev_to_bt(dev);
-	int already_exiting = 0;
-
-	spin_lock(&bt->lock);
-	if (bt->exiting)
-		already_exiting = 1;
-	else if (!bt->suspend)
-		bt->exiting = 1;
-	spin_unlock(&bt->lock);
-	if (!bt->exiting || already_exiting)
-		return -EBUSY;
-
-	INIT_WORK(&bt->delete, bt_remove_worker);
-	schedule_work(&bt->delete);
-	return count;
-}
-static DEVICE_ATTR_WO(delete);
-
 static struct attribute *bt_attrs[] = {
-	&dev_attr_delete.attr,
 	&dev_attr_backing.attr,
 	&dev_attr_suspend.attr,
 	&dev_attr_persist_timeout.attr,
@@ -605,22 +583,47 @@ static void bt_put(struct bt_dev * bt)
 	module_put(THIS_MODULE);
 }
 
-static void bt_remove(struct bt_dev *bt)
-{
-	bt_del(bt);
+static int bt_enter_remove(struct bt_dev * bt) {
+	spin_lock(&bt->lock);
+	if (!bt->suspend)
+		bt->exiting = 1;
+	spin_unlock(&bt->lock);
 
+	if (!bt->exiting)
+		return -EBUSY;
+
+	return 0;
+}
+
+static int delete_set(const char *val, const struct kernel_param *kp)
+{
+	int err = -ENODEV;
+	struct bt_dev * bt, * n;
 	spin_lock(&btlock);
-		list_del(&bt->entry);
+		list_for_each_entry_safe(bt, n, &bt_devs, entry) {
+			if (!strncmp(val, bt->disk->disk_name, strnlen(bt->disk->disk_name, DISK_NAME_LEN))) {
+				err = bt_enter_remove(bt);
+				if (!err)
+					list_del(&bt->entry);
+				break;
+			}
+		}
 	spin_unlock(&btlock);
 
+	if (err)
+		return err;
+
+	bt_del(bt);
 	bt_put(bt);
+
+	return 0;
 }
 
-void bt_remove_worker(struct work_struct *work)
-{
-	struct bt_dev * bt = container_of(work, struct bt_dev, delete);
-	bt_remove(bt);
-}
+struct kernel_param_ops delete_ops = { 
+	.set = delete_set,
+};
+module_param_cb(delete, &delete_ops, NULL, 0664);
+MODULE_PARM_DESC(create, "Delete existing passthru device");
 
 static int create_set(const char *val, const struct kernel_param *kp)
 {

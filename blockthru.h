@@ -60,10 +60,6 @@ struct bt_dev {
 
 	int exiting;
 	struct completion exit;
-	/*  we can't delete ourself from within a our attribute code, 
-		because the delete code hangs waiting for all attributes
-		to return, so we need a worker for that */
-	struct work_struct delete;
 
 	unsigned long tries;
 	struct list_head free;
