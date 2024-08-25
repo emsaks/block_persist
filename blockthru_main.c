@@ -606,7 +606,7 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 	int err = -ENODEV;
 	struct bt_dev * bt, * n;
 	spin_lock(&btlock);
-		list_for_each_entry_safe(bt, n, &bt_devs, entry) {
+		list_for_each_entry(bt, &bt_devs, entry) {
 			if (!strncmp(val, bt->disk->disk_name, strnlen(bt->disk->disk_name, DISK_NAME_LEN))) {
 				err = bt_try_exit(bt);
 				if (!err)
