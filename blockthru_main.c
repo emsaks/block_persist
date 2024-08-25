@@ -603,7 +603,7 @@ static int bt_try_exit(struct bt_dev * bt) {
 static int delete_set(const char *val, const struct kernel_param *kp)
 {
 	int err = -ENODEV;
-	struct bt_dev * bt, * n;
+	struct bt_dev * bt;
 	mutex_lock(&btlock);
 		list_for_each_entry(bt, &bt_devs, entry) {
 			if (!strncmp(val, bt->disk->disk_name, strnlen(bt->disk->disk_name, DISK_NAME_LEN))) {
