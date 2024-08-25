@@ -113,7 +113,7 @@ static inline void rip_probe(struct kretprobe * probe)
 }
 
 extern char * holder;
-int bt_backing_swap(struct bt_dev * bt, struct bdev_handle * handle);
+int bt_backing_swap_locked(struct bt_dev * bt, struct bdev_handle * handle);
 
 void persist_new_dev(struct bt_dev * bt, struct block_device * bd);
 void persist_cleanup(struct bt_dev * bt);

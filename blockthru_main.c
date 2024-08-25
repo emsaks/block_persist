@@ -250,8 +250,7 @@ static void bt_backing_release(struct bt_dev *bt, struct gendisk * gendisk)
 		backing_release(backing); 
 }
 
-// TAKE LOCK BEFORE!
-int bt_backing_swap(struct bt_dev * bt, struct bdev_handle *handle)
+int bt_backing_swap_locked(struct bt_dev * bt, struct bdev_handle *handle)
 {
 	struct block_device *bd = handle->bdev;
 
@@ -312,7 +311,7 @@ retry:
 
 	spin_lock(&bt->lock);
 		persist_new_dev(bt, bd);
-		err = bt_backing_swap(bt, bdev_handle);
+		err = bt_backing_swap_locked(bt, bdev_handle);
 	spin_unlock(&bt->lock);
 
 	return err;
@@ -529,7 +528,7 @@ static int bt_alloc(const char * name)
 	// an alternative is, upon unload:
 	//	block any new creation
 	//	flush_scheduled_work to flush scheduled deletes
-	//	manually delete any remaining/or return busy
+	//	manually delete any remaining
 	if(!try_module_get(THIS_MODULE))
 		goto out_rip_probe;
 

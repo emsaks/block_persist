@@ -150,7 +150,7 @@ retry:
 			if (IS_ERR_OR_NULL(bd)) {
 				pw("Failed to open disk [%s] with error: %li\n", d->disk->disk_name, PTR_ERR(bd));
 			} else
-				bt_backing_swap(bt, h);
+				bt_backing_swap_locked(bt, h);
 		}
 		spin_unlock(&bt->lock);
 	} else {

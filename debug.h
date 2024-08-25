@@ -12,7 +12,11 @@ static inline int debug_spin_trylock(spinlock_t * lock, char * name, char * file
 	return ret;
 }
 
-#define spin_lock(mut) pr_warn("Pre lock (%s) in %s, @%i\n", #mut, __FILE__, __LINE__); (spin_lock)(mut); pr_warn("Post lock @%i\n", __LINE__);
-#define spin_unlock(mut) pr_warn("Pre unlock (%s) in %s @%i\n", #mut, __FILE__, __LINE__); (spin_unlock)(mut); pr_warn("Post unlock @%i\n", __LINE__);
-#define spin_trylock(mut) (debug_spin_trylock(mut, #mut, __FILE__, __LINE__))
+#define spin_lock(lock) pr_warn("Pre lock (%s) in %s, @%i\n", #lock, __FILE__, __LINE__); (spin_lock)(lock); pr_warn("Post lock @%i\n", __LINE__);
+#define spin_unlock(lock) pr_warn("Pre unlock (%s) in %s @%i\n", #lock, __FILE__, __LINE__); (spin_unlock)(lock); pr_warn("Post unlock @%i\n", __LINE__);
+#define spin_trylock(lock) (debug_spin_trylock(lock, #lock, __FILE__, __LINE__))
+
+#define mutex_lock(lock) pr_warn("Pre lock (%s) in %s, @%i\n", #lock, __FILE__, __LINE__); (mutex_lock)(lock); pr_warn("Post lock @%i\n", __LINE__);
+#define mutex_unlock(lock) pr_warn("Pre unlock (%s) in %s @%i\n", #lock, __FILE__, __LINE__); (mutex_unlock)(lock); pr_warn("Post unlock @%i\n", __LINE__);
+#define mutex_trylock(lock) (debug_mutex_trylock(lock, #lock, __FILE__, __LINE__))
 #endif
