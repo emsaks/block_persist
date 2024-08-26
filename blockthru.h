@@ -59,7 +59,14 @@ struct bt_dev {
 	bool await_backing;
 
 	int exiting;
-	struct completion exit;
+	/* This is used to wait for all inflight io to complete
+	 * before returning from a disk delete request
+	 * so the user will know which disk is hanging on io
+	 * The MODULE_PUT and bt_free must be done post the wait()
+	 * but if we remove this, they can be moved into 
+	 * bt_release
+	*/ 
+	struct completion release;
 
 	unsigned long tries;
 	struct list_head free;
@@ -125,7 +132,7 @@ extern struct device_attribute dev_attr_persist_timeout;
 extern struct device_attribute dev_attr_persist_pattern;
 
 #ifdef SALVAGE
-void prep_bio(struct bio * bio);
+void prep_bio(struct bt_dev * bt, struct bio * bio);
 size_t salvage_bio(struct bio * bio);
 extern struct device_attribute dev_attr_salvaged_bytes;
 #endif

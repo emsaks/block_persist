@@ -7,15 +7,12 @@ struct {
 	int off;
 } magic = {{'B','l','o','c','k','t','h','r','u',' ','s','a','l','v','a','g','e'}};
 
-void prep_bio(struct bio * bio)
+void prep_bio(struct bt_dev * bt, struct bio * bio)
 {
 	void * mem;
 	struct bio_vec bvec;
 	struct bvec_iter iter;
-
-	struct bio_stash * stash = (struct bio_stash*)bio->bi_private;
-	struct bt_dev * bt = stash->disk->bt;
-
+	
 	if (bt->salvaged_bytes < 0 || bio->bi_opf != REQ_OP_READ)
 		return;
 
@@ -26,7 +23,6 @@ void prep_bio(struct bio * bio)
 			memcpy(mem+magic.off, &magic, sizeof(magic));
 		kunmap_local(mem);
 	}
-	
 }
 
 size_t salvage_bio(struct bio * bio)

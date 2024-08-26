@@ -1,4 +1,4 @@
-VER := 2
+VER := 3
 KBUILD_CFLAGS_MODULE += -D BT_VER=$(VER) -D SALVAGE -I /lib/modules/$(shell uname -r)/build -I /usr/src/linux-source-6.8.0/linux-source-6.8.0
 obj-m := blockthru$(VER).o
 blockthru$(VER)-objs := blockthru_main.o partscan.o persist.o salvage.o

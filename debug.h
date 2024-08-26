@@ -1,6 +1,8 @@
 #include <linux/spinlock.h>
 #include <linux/printk.h>
 
+#define CHECKPOINT pr_warn("Reached line %i in file %s\n", __LINE__, __FILE__)
+
 #ifdef DEBUG
 #define D(code) pr_warn("Entering code @%i: "#code"\n", __LINE__); code ; pr_warn("Exiting code: "#code"\n");
 

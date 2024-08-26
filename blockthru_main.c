@@ -13,10 +13,21 @@ char * holder = "blockthru"BT_VER_STR " held disk.";
 DEFINE_MUTEX(btlock);
 static LIST_HEAD(bt_devs);
 
-static void release_dev(struct kref *ref)
+static void bt_release(struct kref *ref)
 {
 	struct bt_dev * bt = container_of(ref, struct bt_dev, refcount);
-	complete(&bt->exit);
+	struct bio_stash * stash, * n;
+
+	put_disk(bt->disk);
+
+	list_for_each_entry_safe(stash, n, &bt->free, entry)
+		kfree(stash);
+
+	complete(&bt->release);
+}
+
+static void bt_put(struct bt_dev *bt) {
+	kref_put(&bt->refcount, bt_release);
 }
 
 static struct backing * backing_get(struct bt_dev * bt)
@@ -49,7 +60,7 @@ static void backing_put_worker(struct work_struct * work)
 	bdev_release(backing->bdev_handle);
 
 	kfree(backing);
-	kref_put(&bt->refcount, release_dev);
+	bt_put(bt);
 }
 
 static void backing_put(struct kref *ref)
@@ -445,7 +456,7 @@ static void bt_submit_bio(struct bio *bio)
 	bio->bi_end_io = bt_io_end;
 
 #ifdef SALVAGE
-	prep_bio(bio);
+	prep_bio(bt, bio);
 #endif
 	bt_submit_internal(bt, bio);
 }
@@ -482,12 +493,13 @@ static int bt_alloc(const char * name)
 	spin_lock_init(&bt->lock);
 	kref_init(&bt->refcount);
 	init_completion(&bt->resume);
-	init_completion(&bt->exit);
+	init_completion(&bt->release);
 
 	INIT_LIST_HEAD(&bt->free);
 
 	bt->tries = 1;
 	bt->await_backing = 1;
+	bt->salvaged_bytes = -1;
 
 	disk = bt->disk = blk_alloc_disk(NUMA_NO_NODE);
 	if (!disk)
@@ -551,7 +563,7 @@ out_free_dev:
 
 static void bt_del(struct bt_dev *bt)
 {
-	struct bio_stash * stash, * n;
+	
 	
 	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
@@ -564,19 +576,11 @@ static void bt_del(struct bt_dev *bt)
 	// or alternatively, for resume on suspend also...?
 	bt->await_backing = 0;
 	complete_all(&bt->resume);
-	
-	kref_put(&bt->refcount, release_dev);
-	wait_for_completion(&bt->exit);
-	
+
 	del_gendisk(bt->disk);
-	put_disk(bt->disk);
-
-	list_for_each_entry_safe(stash, n, &bt->free, entry)
-		kfree(stash);
-}
-
-static void bt_put(struct bt_dev * bt)
-{
+	bt_put(bt);
+	
+	wait_for_completion(&bt->release);
 	kfree (bt);
 	module_put(THIS_MODULE);
 }
@@ -619,7 +623,6 @@ static int delete_set(const char *val, const struct kernel_param *kp)
 		return err;
 
 	bt_del(bt);
-	bt_put(bt);
 
 	return 0;
 }

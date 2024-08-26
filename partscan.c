@@ -15,6 +15,7 @@ DEFINE_SPINLOCK(partscan_lock);
 
 static unsigned long block_all_timeout = 0, block_once_timeout = 0;
 static struct device * previous_scsi_target = NULL;
+static struct gendisk * previous_revalidate_gendisk = NULL;
 static unsigned long jiffies_at_block = 0;
 struct instance_data {
     struct gendisk *disk;
@@ -45,8 +46,13 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	if (!disk)
 		return 0;
 
-	if (should_block())
+	/*	If this disk was seen first in sd_revalidate
+	 *	assume the timeout expired in the meantime
+	 *	and block anyway */
+	if (should_block() || previous_revalidate_gendisk == disk)
 		data->disk = disk;
+
+	previous_revalidate_gendisk = NULL;
 
 	// intercept partition scan for any disk under the same scsi target
 	// if they are added in quick succession (useful for card readers)
@@ -109,6 +115,11 @@ static struct kprobe sd_revalidate_probe = {
 
 static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 {
+	// this was usually cleared in device_add_disk
+	// but in case it never made it that far 
+	// ensure we don't keep a stale pointer
+	previous_revalidate_gendisk = NULL;
+
 	if (!should_block())
 		return 0;
 
@@ -117,6 +128,8 @@ static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 		pr_warn("Bug: Doesn't look like we got a gendisk in %s\n", sd_revalidate_probe.symbol_name);
 		return 0;
 	}
+
+	previous_revalidate_gendisk = gd;
 
 	struct scsi_disk *sdkp = scsi_disk(gd);
 	struct scsi_device *sdp = sdkp->device;
