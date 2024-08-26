@@ -96,16 +96,16 @@ static int device_add_disk_return(struct kretprobe_instance *ri, struct pt_regs 
 	return 0;
 }
 
-static struct kretprobe partscan_probe;
+static struct kretprobe device_add_disk_probe;
 
-static int sd_revalidate_entry(struct kprobe *p, struct pt_regs *regs);
+static int sd_revalidate_disk_entry(struct kprobe *p, struct pt_regs *regs);
 
-static struct kprobe sd_revalidate_probe = {
-	.pre_handler = sd_revalidate_entry,
+static struct kprobe sd_revalidate_disk_probe = {
+	.pre_handler = sd_revalidate_disk_entry,
 	.symbol_name = "sd_revalidate_disk.isra.0",
 };
 
-static int sd_revalidate_entry(struct kprobe *p, struct pt_regs *regs)
+static int sd_revalidate_disk_entry(struct kprobe *p, struct pt_regs *regs)
 {
 	// this was usually cleared in device_add_disk
 	// but in case it never made it that far 
@@ -117,7 +117,7 @@ static int sd_revalidate_entry(struct kprobe *p, struct pt_regs *regs)
 
 	struct gendisk * gd = (struct gendisk *)regs->ARG1;
 	if (PTR_ERR_OR_ZERO(gd) || gd->disk_name[0] != 's' || gd->disk_name[1] != 'd' || gd->disk_name[3] != '\0') {
-		pr_warn("Bug: Doesn't look like we got a gendisk in %s\n", sd_revalidate_probe.symbol_name);
+		pr_warn("Bug: Doesn't look like we got a gendisk in %s\n", sd_revalidate_disk_probe.symbol_name);
 		return 0;
 	}
 
@@ -197,21 +197,19 @@ MODULE_PARM_DESC(read_before_ms, "Allow a dummy read when initializing disk. Som
 
 void block_partscan_init(void)
 {
-	plant_retprobe(&partscan_probe, device_add_disk, sizeof(struct instance_data));
+	plant_retprobe(&device_add_disk_probe, device_add_disk, sizeof(struct instance_data));
 
-	int err = register_kprobe(&sd_revalidate_probe);
+	int err = register_kprobe(&sd_revalidate_disk_probe);
 	if (err) {
-		pr_warn("register_kprobe for %s failed, returned %d\n", sd_revalidate_probe.symbol_name, err);
-		memset(&sd_revalidate_probe, 0, sizeof(sd_revalidate_probe));
+		pr_warn("register_kprobe for %s failed, returned %d\n", sd_revalidate_disk_probe.symbol_name, err);
+		memset(&sd_revalidate_disk_probe, 0, sizeof(sd_revalidate_disk_probe));
 	}
 }
 
 void block_partscan_cleanup(void)
 {
-	rip_probe(&partscan_probe);
+	rip_probe(&device_add_disk_probe);
 
-	if (sd_revalidate_probe.addr) {
-		unregister_kprobe(&sd_revalidate_probe);
-		memset(&sd_revalidate_probe, 0, sizeof(sd_revalidate_probe));
-	}
+	if (sd_revalidate_disk_probe.addr) 
+		unregister_kprobe(&sd_revalidate_disk_probe);
 }
