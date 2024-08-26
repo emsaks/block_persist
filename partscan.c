@@ -57,6 +57,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	// intercept partition scan for any disk under the same scsi target
 	// if they are added in quick succession (useful for card readers)
 	// even if a one-time block was specified
+	// todo: this should probably be moved into sd_revalidate_disk
 	if (   !data->disk 
 		&& previous_scsi_target
 		&& dev

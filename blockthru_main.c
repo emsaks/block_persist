@@ -1,6 +1,10 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <drivers/scsi/sd.h>
+
 #include "blockthru.h"
 #include "compat.h"
 #include "regs.h"
@@ -95,9 +99,20 @@ static void stash_put(struct bt_dev * bt, struct bio_stash * stash)
 	spin_unlock(&bt->lock);
 }
 
+static int is_dead(struct gendisk *gd)
+{
+	if test_bit(GD_DEAD, &gd->state)
+		return 1;
+
+	struct scsi_disk *sdk = scsi_disk(gd);
+	struct scsi_device *sdev = sdk->device;
+
+	return sdev->sdev_state == SDEV_TRANSPORT_OFFLINE || sdev->sdev_state == SDEV_DEL;
+}
+
 static int should_block(struct bt_dev * bt) 
 {
-	return bt->suspend || (bt->await_backing && (!bt->backing || test_bit(GD_DEAD, &bt->backing->bd->bd_disk->state)));
+	return bt->suspend || (bt->await_backing && (!bt->backing || is_dead(bt->backing->bd->bd_disk)));
 }
 
 static void bt_bio_final(struct bt_dev * bt, struct bio * bio)
