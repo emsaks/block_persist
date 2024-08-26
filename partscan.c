@@ -2,10 +2,7 @@
 #include <linux/moduleparam.h>
 #include <linux/kprobes.h>
 #include <linux/blkdev.h>
-
-#include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
-#include <drivers/scsi/sd.h>
 
 #include "blockthru.h"
 #include "regs.h"
@@ -31,7 +28,7 @@ static int should_block(void)
 	return block;
 }
 
-static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int device_add_disk_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct instance_data *data;
 	struct gendisk *disk;
@@ -90,7 +87,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	return 0;
 }
 
-static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int device_add_disk_return(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct gendisk *disk;
 
@@ -99,22 +96,16 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	return 0;
 }
 
-static struct kretprobe partscan_probe = {
-	.handler        = ret_handler,
-	.entry_handler  = entry_handler,
-	.data_size      = sizeof(struct instance_data),
-	.maxactive      = 20,
-	.kp.symbol_name	= "device_add_disk",
-};
+static struct kretprobe partscan_probe;
 
-static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs);
+static int sd_revalidate_entry(struct kprobe *p, struct pt_regs *regs);
 
 static struct kprobe sd_revalidate_probe = {
-	.pre_handler  = sd_revalidate_handler,
-	.symbol_name	= "sd_revalidate_disk.isra.0",
+	.pre_handler = sd_revalidate_entry,
+	.symbol_name = "sd_revalidate_disk.isra.0",
 };
 
-static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
+static int sd_revalidate_entry(struct kprobe *p, struct pt_regs *regs)
 {
 	// this was usually cleared in device_add_disk
 	// but in case it never made it that far 
@@ -132,11 +123,10 @@ static int sd_revalidate_handler(struct kprobe *p, struct pt_regs *regs)
 
 	previous_revalidate_gendisk = gd;
 
-	struct scsi_disk *sdkp = scsi_disk(gd);
-	struct scsi_device *sdp = sdkp->device;
+	struct scsi_device *sdev = scsi_dev_from_gd(gd);
 	if (!read_before_ms) {
 		pr_warn("[%s] Disabling read_before_ms\n", gd->disk_name);
-		sdp->read_before_ms = 0;
+		sdev->read_before_ms = 0;
 	}
 	return 0;
 }
@@ -207,13 +197,9 @@ MODULE_PARM_DESC(read_before_ms, "Allow a dummy read when initializing disk. Som
 
 void block_partscan_init(void)
 {
-	int err = register_kretprobe(&partscan_probe);
-	if (err) {
-		pr_warn("register_kretprobe for %s failed, returned %d\n", partscan_probe.kp.symbol_name, err);
-		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
-	}
+	plant_retprobe(&partscan_probe, device_add_disk, sizeof(struct instance_data));
 
-	err = register_kprobe(&sd_revalidate_probe);
+	int err = register_kprobe(&sd_revalidate_probe);
 	if (err) {
 		pr_warn("register_kprobe for %s failed, returned %d\n", sd_revalidate_probe.symbol_name, err);
 		memset(&sd_revalidate_probe, 0, sizeof(sd_revalidate_probe));
@@ -222,10 +208,7 @@ void block_partscan_init(void)
 
 void block_partscan_cleanup(void)
 {
-	if (partscan_probe.kp.addr) {
-		unregister_kretprobe(&partscan_probe);
-		memset(&partscan_probe.kp, 0, sizeof(partscan_probe.kp));
-	}
+	rip_probe(&partscan_probe);
 
 	if (sd_revalidate_probe.addr) {
 		unregister_kprobe(&sd_revalidate_probe);

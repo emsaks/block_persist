@@ -12,6 +12,10 @@
 #include <linux/kprobes.h>
 #include <linux/string.h>
 
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_device.h>
+#include <drivers/scsi/sd.h>
+
 #include "debug.h"
 
 #define STRINGIFY2(x) #x
@@ -71,7 +75,8 @@ struct bt_dev {
 	unsigned long tries;
 	struct list_head free;
 
-	struct kretprobe add_probe, del_probe;
+	struct kretprobe add_probe; 
+	struct kprobe del_probe;
 
 	char *	persist_pattern;
 	int 	addtl_depth;
@@ -86,7 +91,12 @@ struct bt_dev {
 	struct kref refcount;
 };
 
-static inline int plant_probe(struct kretprobe * probe, kretprobe_handler_t entry, kretprobe_handler_t ret, char * symbol_name, size_t data_size)
+static inline struct scsi_device * scsi_dev_from_gd(struct gendisk * gd)
+{
+	return scsi_disk(gd)->device; // can use *(struct scsi_device**(gd->private_data)) to avoid including sd.h
+}
+
+static inline int plant_retprobe_params(struct kretprobe * probe, kretprobe_handler_t entry, kretprobe_handler_t ret, char * symbol_name, size_t data_size)
 {
 	int e;
 
@@ -110,6 +120,8 @@ static inline int plant_probe(struct kretprobe * probe, kretprobe_handler_t entr
 
 	return 0;
 }
+
+#define plant_retprobe(probe, symbol, data_size) plant_retprobe_params(probe, symbol ## _entry, symbol ## _return, #symbol, data_size) 
 
 static inline void rip_probe(struct kretprobe * probe)
 {

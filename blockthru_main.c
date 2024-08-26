@@ -1,9 +1,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-
-#include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
-#include <drivers/scsi/sd.h>
 
 #include "blockthru.h"
 #include "compat.h"
@@ -104,9 +101,7 @@ static int is_dead(struct gendisk *gd)
 	if test_bit(GD_DEAD, &gd->state)
 		return 1;
 
-	struct scsi_disk *sdk = scsi_disk(gd);
-	struct scsi_device *sdev = sdk->device;
-
+	struct scsi_device *sdev = scsi_dev_from_gd(gd);
 	return sdev->sdev_state == SDEV_TRANSPORT_OFFLINE || sdev->sdev_state == SDEV_DEL;
 }
 
@@ -342,10 +337,10 @@ retry:
 	return err;
 }
 
-static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int del_gendisk_entry(struct kprobe *p, struct pt_regs *regs)
 {
 	struct gendisk * disk = (struct gendisk *)regs->ARG1;
-	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, del_probe);
+	struct bt_dev * bt = container_of(p, struct bt_dev, del_probe);
 
 	if (IS_ERR_OR_NULL(disk))
 		return 0;
@@ -354,8 +349,6 @@ static int del_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	return 0;
 }
-
-static int del_ret(struct kretprobe_instance *ri, struct pt_regs *regs) { return 0; }
 
 static ssize_t suspend_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -548,7 +541,14 @@ static int bt_alloc(const char * name)
 		goto out_del_disk;
 	}
 
-	plant_probe(&bt->del_probe, del_entry, del_ret, "del_gendisk", 0);
+	bt->del_probe.symbol_name = "del_gendisk";
+	bt->del_probe.pre_handler = del_gendisk_entry;
+
+	err = register_kprobe(&bt->del_probe);
+	if (err) {
+		pr_warn("register_kprobe for %s failed, returned %d\n", bt->del_probe.symbol_name, err);
+		memset(&bt->del_probe, 0, sizeof(&bt->del_probe));
+	}
 
 	// block module unload until this bt is deleted
 	// an alternative is, upon unload:
@@ -566,7 +566,8 @@ static int bt_alloc(const char * name)
 
 out_rip_probe:
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
-	rip_probe(&bt->del_probe);
+	if (bt->del_probe.addr)
+		unregister_kprobe(&bt->del_probe);
 out_del_disk:
 	del_gendisk(disk);
 out_cleanup_disk:
@@ -578,13 +579,12 @@ out_free_dev:
 
 static void bt_del(struct bt_dev *bt)
 {
-	
-	
 	// these block until all runing code completes, so they're safe
 	sysfs_remove_group(&disk_to_dev(bt->disk)->kobj, &bt_attribute_group);
 	persist_cleanup(bt);
 
-	rip_probe(&bt->del_probe);
+	if (bt->del_probe.addr)
+		unregister_kprobe(&bt->del_probe);
 
 	bt_backing_release(bt, NULL);
 	// todo: if we have inflight, should we just hang until await_backing is changed (BEFORE sysfs_remove)

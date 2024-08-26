@@ -60,7 +60,7 @@ int try_script(struct persist_c *pc) {
 }
 */
 
-static int add_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int device_add_disk_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct gendisk * disk = (void*)regs->ARG2;
 	struct add_data * d = (void*)ri->data;
@@ -114,7 +114,7 @@ retry:
 	return 0;
 }
 
-static int add_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int device_add_disk_return(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct bt_dev * bt = container_of(get_kretprobe(ri), struct bt_dev, add_probe);
 	struct add_data * d = (void*)ri->data;
@@ -194,7 +194,7 @@ static int set_pattern(struct bt_dev * bt, const char * pattern, size_t count)
 
 			if (bt->persist_pattern) kfree(bt->persist_pattern);
 			if (!bt->add_probe.handler) {
-				ret = plant_probe(&bt->add_probe, add_entry, add_ret, "device_add_disk", sizeof(struct add_data));
+				ret = plant_retprobe(&bt->add_probe, device_add_disk, sizeof(struct add_data));
 			}
 			if (ret) {
 				kfree(devpath);

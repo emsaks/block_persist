@@ -14,7 +14,8 @@
         "cstdlib": "c",
         "sd.h": "c",
         "blkdev.h": "c",
-        "scsi_cmnd.h": "c"
+        "scsi_cmnd.h": "c",
+        "blockthru.h": "c"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }
