@@ -96,7 +96,13 @@ static int device_add_disk_return(struct kretprobe_instance *ri, struct pt_regs 
 	return 0;
 }
 
-static struct kretprobe device_add_disk_probe;
+static struct kretprobe device_add_disk_probe = {
+	.handler        = device_add_disk_return,
+	.entry_handler  = device_add_disk_entry,
+	.data_size      = sizeof(struct instance_data),
+	.maxactive      = 20,
+	.kp.symbol_name	= "device_add_disk",
+};
 
 static int sd_revalidate_disk_entry(struct kprobe *p, struct pt_regs *regs);
 
@@ -197,18 +203,19 @@ MODULE_PARM_DESC(read_before_ms, "Allow a dummy read when initializing disk. Som
 
 void block_partscan_init(void)
 {
-	plant_retprobe(&device_add_disk_probe, device_add_disk, sizeof(struct instance_data));
+	int err = register_kretprobe(&device_add_disk_probe);
+	if (err)
+		pr_warn("register_kretprobe for %s failed, returned %d\n", device_add_disk_probe.kp.symbol_name, err);
 
-	int err = register_kprobe(&sd_revalidate_disk_probe);
-	if (err) {
+	err = register_kprobe(&sd_revalidate_disk_probe);
+	if (err)
 		pr_warn("register_kprobe for %s failed, returned %d\n", sd_revalidate_disk_probe.symbol_name, err);
-		memset(&sd_revalidate_disk_probe, 0, sizeof(sd_revalidate_disk_probe));
-	}
 }
 
 void block_partscan_cleanup(void)
 {
-	rip_probe(&device_add_disk_probe);
+	if (device_add_disk_probe.kp.addr)
+		unregister_kretprobe(&device_add_disk_probe);
 
 	if (sd_revalidate_disk_probe.addr) 
 		unregister_kprobe(&sd_revalidate_disk_probe);
