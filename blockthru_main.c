@@ -98,7 +98,7 @@ static void stash_put(struct bt_dev * bt, struct bio_stash * stash)
 
 static int is_dead(struct gendisk *gd)
 {
-	return test_bit(GD_DEAD, &gd->state) || !(scsi_device_online(scsi_dev_from_gd(gd)));
+	return test_bit(GD_DEAD, &gd->state) || !scsi_device_online(scsi_dev_from_gd(gd));
 }
 
 static int should_block(struct bt_dev * bt) 
@@ -142,7 +142,7 @@ retry:
 		stash->disk = NULL;
 	} else {
 		// !note: REQUIRES that !bt->backing or swapping under lock, before calling any backing_put()
-		if (bt->backing &&(!kref_get_unless_zero(&bt->backing->inflight) || is_dead(bt->backing->bd->bd_disk)))
+		if (bt->backing && (is_dead(bt->backing->bd->bd_disk) || !kref_get_unless_zero(&bt->backing->inflight)))
 			stash->disk = NULL;
 		else stash->disk = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
 	}
