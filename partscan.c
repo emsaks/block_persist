@@ -140,7 +140,7 @@ static int sd_revalidate_disk_entry(struct kprobe *p, struct pt_regs *regs)
 // best effort to return useful information; might be improvable
 static int block_partscan_get(char *buf, const struct kernel_param *kp)
 {
-	int ret;
+	long ret;
 	unsigned long now;
 	
 	spin_lock(&partscan_lock);
@@ -153,13 +153,15 @@ static int block_partscan_get(char *buf, const struct kernel_param *kp)
 		if (now <= block_all_timeout)
 			ret = block_all_timeout - now;
 		else if (now <= block_once_timeout)
-			ret = -(block_once_timeout - now);
+			ret = -(long)(block_once_timeout - now);
 		else
 			ret = 0;
 	}
 	spin_unlock(&partscan_lock);
 	
-	return sysfs_emit(buf, "%i\n", ret);
+	ret = (ret < 0) ? -(long)jiffies_to_msecs(-ret) : jiffies_to_msecs(ret);
+
+	return sysfs_emit(buf, "%li\n", ret);
 }
 
 static int block_partscan_set(const char *val, const struct kernel_param *kp)
@@ -169,8 +171,10 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 	unsigned long new_timeout;
 
 	err = kstrtol(val, 10, &v);
-	if (err || v > INT_MAX)
+	if (err || v > INT_MAX || v < INT_MIN)
 		return -EINVAL;
+
+	v = (v < 0) ? -(long)msecs_to_jiffies(-v) : msecs_to_jiffies(v);
 
 	spin_lock(&partscan_lock);
 	if (v < -1) {
@@ -196,7 +200,7 @@ static int block_partscan_set(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 module_param_call(block_partscan, block_partscan_set, block_partscan_get, NULL, 0664);
-MODULE_PARM_DESC(block_partscan, "Block partition scan (1) or for (2+) jiffies; negate for one-time block");
+MODULE_PARM_DESC(block_partscan, "Block partition scan (1) or for (2+) ms; negate for one-time block");
 
 module_param(read_before_ms, bool, 0664);
 MODULE_PARM_DESC(read_before_ms, "Allow a dummy read when initializing disk. Some disks require it.");
