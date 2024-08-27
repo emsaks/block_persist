@@ -142,7 +142,7 @@ retry:
 		stash->disk = NULL;
 	} else {
 		// !note: REQUIRES that !bt->backing or swapping under lock, before calling any backing_put()
-		if (bt->backing && !kref_get_unless_zero(&bt->backing->inflight))
+		if (bt->backing &&(!kref_get_unless_zero(&bt->backing->inflight) || is_dead(bt->backing->bd->bd_disk)))
 			stash->disk = NULL;
 		else stash->disk = bt->backing; // this must be set under lock so the bd won't be swapped, free'd underneath us
 	}
@@ -152,7 +152,7 @@ retry:
 		wait_for_completion(&bt->resume); // todo: use interruptable/killable
 		goto retry;
 	} else if (stash->disk == NULL) {
-		pw("Setting STS_OFFLINE because there's no backing\n");
+		pw("Setting STS_OFFLINE because there's no backing or it's offline\n");
 		bio->bi_status = BLK_STS_OFFLINE;
 		bt_bio_final(bt, bio);
 	} else {
