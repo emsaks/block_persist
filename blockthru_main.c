@@ -98,11 +98,7 @@ static void stash_put(struct bt_dev * bt, struct bio_stash * stash)
 
 static int is_dead(struct gendisk *gd)
 {
-	if test_bit(GD_DEAD, &gd->state)
-		return 1;
-
-	struct scsi_device *sdev = scsi_dev_from_gd(gd);
-	return sdev->sdev_state == SDEV_TRANSPORT_OFFLINE || sdev->sdev_state == SDEV_DEL;
+	return test_bit(GD_DEAD, &gd->state) || !(scsi_device_online(scsi_dev_from_gd(gd)));
 }
 
 static int should_block(struct bt_dev * bt) 
